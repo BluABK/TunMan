@@ -47,8 +47,9 @@ CONNECT through the proxy to a host you choose.
 **Closing the window hides it.** Tunnels keep running; quit from the tray.
 
 **It puts itself in the Start Menu.** On every launch TunMan writes
-`%APPDATA%\…\Start Menu\Programs\TunMan.lnk` pointing at the binary that is
-actually running. Rewriting it every time is the useful part: TunMan runs from
+`%APPDATA%\…\Start Menu\Programs\Blu Software\TunMan.lnk` pointing at the
+binary that is actually running, grouped in one folder with everything else
+from the same author rather than scattered through Programs. Rewriting it every time is the useful part: TunMan runs from
 wherever it was built or unpacked, and a shortcut left pointing at a moved exe
 fails silently from the Start Menu while the app works fine launched directly.
 Turn it off in Settings and the shortcut is removed rather than merely left to

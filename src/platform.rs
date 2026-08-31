@@ -98,21 +98,37 @@ pub fn tray_icon_image() -> anyhow::Result<tray_icon::Icon> {
     Ok(tray_icon::Icon::from_rgba(rgba, w, h)?)
 }
 
-/// Where the Start Menu shortcut goes:
-/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\TunMan.lnk`.
+/// The Start Menu folder this app's shortcut lives in, so everything from the
+/// same author groups together instead of scattering through Programs.
+pub const START_MENU_FOLDER: &str = "Blu Software";
+
+/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs` — the per-user Start Menu.
 ///
-/// The per-user Start Menu, not the machine-wide one — writing to
-/// `%ProgramData%` needs elevation, and TunMan is a per-user app.
-pub fn start_menu_shortcut_path() -> Option<std::path::PathBuf> {
+/// Per-user, not the machine-wide one: writing to `%ProgramData%` needs
+/// elevation, and TunMan is a per-user app.
+fn start_menu_programs() -> Option<std::path::PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
     Some(
         std::path::Path::new(&appdata)
             .join("Microsoft")
             .join("Windows")
             .join("Start Menu")
-            .join("Programs")
-            .join("TunMan.lnk"),
+            .join("Programs"),
     )
+}
+
+/// Where the shortcut goes: `…\Programs\Blu Software\TunMan.lnk`.
+pub fn start_menu_shortcut_path() -> Option<std::path::PathBuf> {
+    Some(start_menu_programs()?.join(START_MENU_FOLDER).join("TunMan.lnk"))
+}
+
+/// Where earlier versions put it, loose in `Programs`.
+///
+/// Kept only so it can be cleaned up: without this, moving the shortcut into a
+/// folder would leave the old one behind and the Start Menu would show TunMan
+/// twice, one of them going stale.
+fn legacy_shortcut_path() -> Option<std::path::PathBuf> {
+    Some(start_menu_programs()?.join("TunMan.lnk"))
 }
 
 /// Create or overwrite the Start Menu shortcut, pointing at the running exe.
@@ -135,6 +151,13 @@ pub fn create_start_menu_shortcut() -> Result<std::path::PathBuf, String> {
     let lnk = start_menu_shortcut_path().ok_or("APPDATA is not set")?;
     if let Some(dir) = lnk.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    }
+    // Sweep up a shortcut from before it moved into the folder, or the Start
+    // Menu shows TunMan twice with one of them going stale.
+    if let Some(old) = legacy_shortcut_path()
+        && old != lnk
+    {
+        let _ = std::fs::remove_file(old);
     }
 
     unsafe {
@@ -177,11 +200,25 @@ pub fn create_start_menu_shortcut() -> Result<std::path::PathBuf, String> {
 /// "there is no shortcut", and it already holds.
 pub fn remove_start_menu_shortcut() -> Result<(), String> {
     let Some(lnk) = start_menu_shortcut_path() else { return Ok(()) };
-    match std::fs::remove_file(&lnk) {
+    // The old loose one too, so unticking really does leave nothing behind.
+    if let Some(old) = legacy_shortcut_path()
+        && old != lnk
+    {
+        let _ = std::fs::remove_file(old);
+    }
+    let removed = match std::fs::remove_file(&lnk) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("removing {}: {e}", lnk.display())),
+    };
+    // Tidy the folder away if this was the last thing in it. `remove_dir`
+    // refusing on a non-empty directory is exactly the guard wanted here —
+    // other software of the same author lives alongside, and removing TunMan
+    // must not take its neighbours' shortcuts with it.
+    if let Some(dir) = lnk.parent() {
+        let _ = std::fs::remove_dir(dir);
     }
+    removed
 }
 
 /// Whether the shortcut exists and points at the running exe.
