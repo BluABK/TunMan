@@ -181,7 +181,7 @@ mod tests {
     /// Untouched rows must survive: the pool may hold proxies that have nothing
     /// to do with TunMan.
     #[test]
-    fn proxies_TunMan_does_not_manage_are_left_alone() {
+    fn proxies_tunman_does_not_manage_are_left_alone() {
         let path = tmp("others");
         let conn = sa_like_db(&path);
         conn.execute(

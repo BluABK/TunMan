@@ -1,10 +1,11 @@
 //! The Mounts tab: sshfs and rclone mounts, kept up.
 
-use egui_extras::{Column, TableBuilder};
+use egui_extras::TableBuilder;
 
-use crate::jobs::{MountCommand, MountStatus};
+use crate::jobs::{MountCommand, MountState, MountStatus};
 use crate::mounts::MountKind;
 use crate::ui::TunManApp;
+use crate::ui::table::ColSpec;
 use crate::util::{fmt_uptime, now_unix};
 
 const ROW_H: f32 = 22.0;
@@ -95,139 +96,188 @@ pub fn show(app: &mut TunManApp, ui: &mut egui::Ui) {
 
     let mut action: Option<(String, MountAction)> = None;
 
-    TableBuilder::new(ui)
+    let cols = crate::ui::table::fit(COLS, ui.available_width(), ui.spacing().item_spacing.x);
+    let mut builder = TableBuilder::new(ui)
         .striped(true)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(18.0))
-        .column(Column::auto().at_least(100.0).clip(true))
-        .column(Column::auto().at_least(58.0))
-        .column(Column::remainder().at_least(180.0).clip(true))
-        .column(Column::auto().at_least(70.0))
-        .column(Column::auto().at_least(72.0))
-        .column(Column::auto().at_least(70.0))
-        .column(Column::auto().at_least(96.0))
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+    for c in &cols {
+        builder = builder.column(c.column());
+    }
+
+    builder
         .header(20.0, |mut h| {
-            let cell = |h: &mut egui_extras::TableRow, title: &str, hover: &str| {
-                h.col(|ui| {
-                    ui.strong(title).on_hover_text(hover);
-                });
-            };
-            cell(&mut h, "", "● mounted, ◐ mounting or retrying, ▲ failed, ○ not mounted.");
-            cell(&mut h, "Name", "Also the tag this mount's lines carry in the Log tab.");
-            cell(&mut h, "Via", "rclone or sshfs.");
-            cell(&mut h, "Source", "What is being mounted.");
-            cell(&mut h, "At", "Drive letter or directory it appears at.");
-            cell(
-                &mut h,
-                "Uptime",
-                "How long it has been answering. A mount is only counted as up once its \
-                 path can actually be listed — a live process is not enough, because a \
-                 mount can go stale while its process stays perfectly happy.",
-            );
-            cell(&mut h, "Retries", "Times it has been remounted after a drop.");
-            cell(&mut h, "", "Mount, unmount, open, edit or delete.");
+            for c in &cols {
+                let key = c.key;
+                h.col(|ui| header_cell(ui, key));
+            }
         })
         .body(|body| {
             body.rows(ROW_H, app.mount_rows.len(), |mut row| {
                 let r = &app.mount_rows[row.index()];
-                let def = app.cfg.mounts.iter().find(|m| m.name == r.name).cloned();
+                let def = app.cfg.mounts.iter().find(|m| m.name == r.name);
 
-                row.col(|ui| {
-                    let mut hover = format!("{}.", r.status.label());
-                    if !r.last_error.is_empty() {
-                        hover.push_str(&format!("\n\nLast message: {}", r.last_error));
-                    }
-                    if r.status == MountStatus::Retrying && r.next_retry_at > 0 {
-                        hover.push_str(&format!(
-                            "\n\nNext attempt in {}.",
-                            fmt_uptime((r.next_retry_at - now_unix()).max(0))
-                        ));
-                    }
-                    if r.gave_up {
-                        hover.push_str(
-                            "\n\nStopped retrying after reaching this mount's retry limit.",
-                        );
-                    }
-                    ui.colored_label(status_color(ui, r.status), r.status.dot())
-                        .on_hover_text(hover);
-                });
-                row.col(|ui| {
-                    ui.label(&r.name);
-                });
-                row.col(|ui| {
-                    let (label, hover) = match &def {
-                        Some(m) => (m.kind.label(), m.kind.hint()),
-                        None => ("—", "No longer in the config."),
-                    };
-                    ui.label(label).on_hover_text(hover);
-                });
-                row.col(|ui| {
-                    ui.label(&r.source).on_hover_text(&r.source);
-                });
-                row.col(|ui| {
-                    ui.label(egui::RichText::new(&r.target).monospace());
-                });
-                row.col(|ui| {
-                    let text = match (r.status, r.since) {
-                        (MountStatus::Mounted, Some(s)) => fmt_uptime(now_unix() - s),
-                        (MountStatus::Retrying, _) if r.next_retry_at > 0 => {
-                            format!("in {}", fmt_uptime((r.next_retry_at - now_unix()).max(0)))
-                        }
-                        _ => "—".to_string(),
-                    };
-                    ui.label(text);
-                });
-                row.col(|ui| {
-                    let hover = match def.as_ref().map(|m| m.retry_delay_secs) {
-                        Some(0) | None => {
-                            "Reconnects with a doubling backoff from 5 seconds, capped at 5 \
-                             minutes."
-                                .to_string()
-                        }
-                        Some(d) => format!(
-                            "Waits a fixed {d}s before reconnecting — set for servers that \
-                             react badly to being prodded straight away."
-                        ),
-                    };
-                    ui.label(if r.restarts == 0 { "—".into() } else { r.restarts.to_string() })
-                        .on_hover_text(hover);
-                });
-                row.col(|ui| {
-                    ui.horizontal(|ui| {
-                        let running = matches!(
-                            r.status,
-                            MountStatus::Mounted | MountStatus::Starting | MountStatus::Retrying
-                        );
-                        if running {
-                            if ui.small_button("⏹").on_hover_text("Unmount.").clicked() {
-                                action = Some((r.name.clone(), MountAction::Stop));
-                            }
-                        } else if ui.small_button("▶").on_hover_text("Mount.").clicked() {
-                            action = Some((r.name.clone(), MountAction::Start));
-                        }
-                        if ui
-                            .add_enabled(
-                                r.status == MountStatus::Mounted,
-                                egui::Button::new("📂").small(),
-                            )
-                            .on_hover_text("Open the mount in Explorer.")
-                            .clicked()
-                        {
-                            action = Some((r.name.clone(), MountAction::Open));
-                        }
-                        if ui.small_button("✏").on_hover_text("Edit this mount.").clicked() {
-                            action = Some((r.name.clone(), MountAction::Edit));
-                        }
-                        if ui.small_button("🗑").on_hover_text("Delete this mount.").clicked() {
-                            action = Some((r.name.clone(), MountAction::Delete));
-                        }
-                    });
-                });
+                for c in &cols {
+                    let key = c.key;
+                    row.col(|ui| cell(ui, key, r, def, &mut action));
+                }
             });
         });
 
     if let Some((name, what)) = action {
         apply(app, &name, what);
+    }
+}
+
+/// The columns of the mount table, in the order they are drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum C {
+    Dot,
+    Name,
+    Via,
+    Source,
+    At,
+    Uptime,
+    Retries,
+    Actions,
+}
+
+/// Widths and drop order. Where a mount appears is the second most useful
+/// thing about it after its name, so `At` is the last optional column to go;
+/// the retry count is the first, since the status hover already carries it.
+const COLS: &[ColSpec<C>] = &[
+    ColSpec::keep(C::Dot, 18.0),
+    ColSpec::keep(C::Name, 100.0),
+    ColSpec::opt(C::Via, 58.0, 2),
+    ColSpec::keep(C::Source, 180.0).grow(),
+    ColSpec::opt(C::At, 70.0, 5),
+    ColSpec::opt(C::Uptime, 72.0, 3),
+    ColSpec::opt(C::Retries, 70.0, 1),
+    ColSpec::keep(C::Actions, 96.0),
+];
+
+fn header_cell(ui: &mut egui::Ui, key: C) {
+    let (title, hover) = match key {
+        C::Dot => ("", "● mounted, ◐ mounting or retrying, ▲ failed, ○ not mounted."),
+        C::Name => ("Name", "Also the tag this mount's lines carry in the Log tab."),
+        C::Via => ("Via", "rclone or sshfs."),
+        C::Source => ("Source", "What is being mounted."),
+        C::At => ("At", "Drive letter or directory it appears at."),
+        C::Uptime => (
+            "Uptime",
+            "How long it has been answering. A mount is only counted as up once its \
+             path can actually be listed — a live process is not enough, because a \
+             mount can go stale while its process stays perfectly happy.",
+        ),
+        C::Retries => ("Retries", "Times it has been remounted after a drop."),
+        C::Actions => ("", "Mount, unmount, open, edit or delete."),
+    };
+    ui.strong(title).on_hover_text(hover);
+}
+
+fn cell(
+    ui: &mut egui::Ui,
+    key: C,
+    r: &MountState,
+    def: Option<&crate::mounts::Mount>,
+    action: &mut Option<(String, MountAction)>,
+) {
+    match key {
+        C::Dot => {
+            let mut hover = format!("{}.", r.status.label());
+            if !r.last_error.is_empty() {
+                hover.push_str(&format!("\n\nLast message: {}", r.last_error));
+            }
+            if r.status == MountStatus::Retrying && r.next_retry_at > 0 {
+                hover.push_str(&format!(
+                    "\n\nNext attempt in {}.",
+                    fmt_uptime((r.next_retry_at - now_unix()).max(0))
+                ));
+            }
+            if r.gave_up {
+                hover.push_str("\n\nStopped retrying after reaching this mount's retry limit.");
+            }
+            ui.colored_label(status_color(ui, r.status), r.status.dot()).on_hover_text(hover);
+        }
+
+        // The hover carries what the narrow layout may have dropped.
+        C::Name => {
+            let mut hover = format!("{}\n\n{}", r.name, r.source);
+            if !r.target.is_empty() {
+                hover.push_str(&format!("\nMounted at {}", r.target));
+            }
+            ui.label(&r.name).on_hover_text(hover);
+        }
+
+        C::Via => {
+            let (label, hover) = match def {
+                Some(m) => (m.kind.label(), m.kind.hint()),
+                None => ("—", "No longer in the config."),
+            };
+            ui.label(label).on_hover_text(hover);
+        }
+
+        C::Source => {
+            ui.label(&r.source).on_hover_text(&r.source);
+        }
+
+        C::At => {
+            ui.label(egui::RichText::new(&r.target).monospace()).on_hover_text(&r.target);
+        }
+
+        C::Uptime => {
+            let text = match (r.status, r.since) {
+                (MountStatus::Mounted, Some(s)) => fmt_uptime(now_unix() - s),
+                (MountStatus::Retrying, _) if r.next_retry_at > 0 => {
+                    format!("in {}", fmt_uptime((r.next_retry_at - now_unix()).max(0)))
+                }
+                _ => "—".to_string(),
+            };
+            ui.label(text);
+        }
+
+        C::Retries => {
+            let hover = match def.map(|m| m.retry_delay_secs) {
+                Some(0) | None => {
+                    "Reconnects with a doubling backoff from 5 seconds, capped at 5 minutes."
+                        .to_string()
+                }
+                Some(d) => format!(
+                    "Waits a fixed {d}s before reconnecting — set for servers that \
+                     react badly to being prodded straight away."
+                ),
+            };
+            ui.label(if r.restarts == 0 { "—".into() } else { r.restarts.to_string() })
+                .on_hover_text(hover);
+        }
+
+        C::Actions => {
+            ui.horizontal(|ui| {
+                let running = matches!(
+                    r.status,
+                    MountStatus::Mounted | MountStatus::Starting | MountStatus::Retrying
+                );
+                if running {
+                    if ui.small_button("⏹").on_hover_text("Unmount.").clicked() {
+                        *action = Some((r.name.clone(), MountAction::Stop));
+                    }
+                } else if ui.small_button("▶").on_hover_text("Mount.").clicked() {
+                    *action = Some((r.name.clone(), MountAction::Start));
+                }
+                if ui
+                    .add_enabled(r.status == MountStatus::Mounted, egui::Button::new("📂").small())
+                    .on_hover_text("Open the mount in Explorer.")
+                    .clicked()
+                {
+                    *action = Some((r.name.clone(), MountAction::Open));
+                }
+                if ui.small_button("✏").on_hover_text("Edit this mount.").clicked() {
+                    *action = Some((r.name.clone(), MountAction::Edit));
+                }
+                if ui.small_button("🗑").on_hover_text("Delete this mount.").clicked() {
+                    *action = Some((r.name.clone(), MountAction::Delete));
+                }
+            });
+        }
     }
 }
 

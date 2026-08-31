@@ -385,8 +385,7 @@ mod tests {
                 let seen = seen_by_upstream.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 4096];
-                    loop {
-                        let Ok(n) = sock.read(&mut buf).await else { break };
+                    while let Ok(n) = sock.read(&mut buf).await {
                         if n == 0 {
                             break;
                         }

@@ -156,6 +156,9 @@ fn main() -> Result<()> {
         "TunMan",
         opts,
         Box::new(move |cc| {
+            // Before anything is drawn: several of the symbols this UI uses have
+            // no glyph in egui's default proportional fonts.
+            ui::fonts::install(&cc.egui_ctx);
             let (tray, tray_rx) = build_tray(cc.egui_ctx.clone())?;
             // Fold tray events into the same channel the doorbell uses.
             std::thread::Builder::new()

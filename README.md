@@ -46,6 +46,19 @@ CONNECT through the proxy to a host you choose.
 
 **Closing the window hides it.** Tunnels keep running; quit from the tray.
 
+**The tables fit the window they are given.** The tunnel table has sixteen
+columns and wants about 1350 pixels to show them all; below that they used to
+run off the right-hand edge with no scrollbar, taking the row's own Start,
+Stop, Edit and Delete buttons with them. Instead each column now declares how
+narrow it is still useful at and how willingly it gives way, and the ones that
+matter least are dropped first: totals, then caps, then the exit address, and
+so on down to uptime. Four columns are never dropped — the status dot, the
+name, the address clients connect to, and the buttons — so a row stays
+identifiable and operable at any width, down to the 720-pixel minimum. Nothing
+is lost by narrowing: select a row and the detail panel spells out every
+dropped column, and each row's name carries a summary in its hover. The Mounts
+and Sync tables work the same way.
+
 **It puts itself in the Start Menu.** On every launch TunMan writes
 `%APPDATA%\…\Start Menu\Programs\Blu Software\TunMan.lnk` pointing at the
 binary that is actually running, grouped in one folder with everything else
@@ -79,12 +92,15 @@ side's own latency, not just the hop to the server. The row shows the last
 probe and the average of the last few on hover; one slow probe on a busy link
 is noise, a raised average is the tunnel being slow.
 
-The **server's own address** sits beside its hostname, from a plain local DNS
-lookup, so you never have to resolve it yourself.
+The **server's own address** comes from a plain local DNS lookup and sits in
+the Server column's hover, so you never have to resolve it yourself.
 
 **Availability** is the share of observed time a tunnel has been up, alongside
 its restart and consecutive-failure counts. It is counted only while TunMan is
 running and resets when TunMan does — it measures the tunnel, not the month.
+For the first two minutes it shows `—` rather than a number: a tunnel that
+came up one second after it was started is 20-out-of-21 seconds available,
+and 95% in red reads as a fault rather than as arithmetic.
 
 A country can be overridden per tunnel, for one that cannot be probed or whose
 provider geolocates somewhere misleading.

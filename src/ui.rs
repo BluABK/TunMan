@@ -1,9 +1,11 @@
 //! The window: three tabs, a tray icon, and the rule that closing hides.
 
 pub mod dialogs;
+pub mod fonts;
 pub mod log_view;
 pub mod mounts;
 pub mod sync;
+pub mod table;
 pub mod traffic;
 pub mod tunnels;
 

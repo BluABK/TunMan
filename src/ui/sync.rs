@@ -1,9 +1,11 @@
 //! The Sync tab: rclone jobs, scheduled or on demand.
 
-use egui_extras::{Column, TableBuilder};
+use egui_extras::TableBuilder;
 
-use crate::jobs::{JobStatus, SyncCommand};
+use crate::jobs::{JobState, JobStatus, SyncCommand};
+use crate::sync::SyncJob;
 use crate::ui::TunManApp;
+use crate::ui::table::ColSpec;
 use crate::util::{fmt_uptime, now_unix};
 
 const ROW_H: f32 = 22.0;
@@ -79,147 +81,31 @@ pub fn show(app: &mut TunManApp, ui: &mut egui::Ui) {
 
     let mut action: Option<(String, JobAction)> = None;
 
-    TableBuilder::new(ui)
+    let cols = crate::ui::table::fit(COLS, ui.available_width(), ui.spacing().item_spacing.x);
+    let mut builder = TableBuilder::new(ui)
         .striped(true)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(18.0))
-        .column(Column::auto().at_least(96.0).clip(true))
-        .column(Column::auto().at_least(120.0))
-        .column(Column::remainder().at_least(220.0).clip(true))
-        .column(Column::auto().at_least(150.0).clip(true))
-        .column(Column::auto().at_least(80.0))
-        .column(Column::auto().at_least(84.0))
-        .column(Column::auto().at_least(112.0))
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+    for c in &cols {
+        builder = builder.column(c.column());
+    }
+
+    builder
         .header(20.0, |mut h| {
-            let cell = |h: &mut egui_extras::TableRow, title: &str, hover: &str| {
-                h.col(|ui| {
-                    ui.strong(title).on_hover_text(hover);
-                });
-            };
-            cell(&mut h, "", "● last run succeeded, ◐ running, ▲ failed, ○ never run.");
-            cell(&mut h, "Name", "Also the tag this job's lines carry in the Log tab.");
-            cell(&mut h, "Mode", "What this job does to the destination.");
-            cell(&mut h, "Source → destination", "rclone paths, exactly as rclone takes them.");
-            cell(&mut h, "Progress", "Live from rclone while a run is in flight.");
-            cell(&mut h, "Last run", "When the last run finished.");
-            cell(&mut h, "Next", "When the schedule will fire again. Manual jobs show —.");
-            cell(&mut h, "", "Run, dry-run, cancel, edit or delete.");
+            for c in &cols {
+                let key = c.key;
+                h.col(|ui| header_cell(ui, key));
+            }
         })
         .body(|body| {
             body.rows(ROW_H, app.job_rows.len(), |mut row| {
                 let r = &app.job_rows[row.index()];
                 row.set_selected(app.selected_job.as_deref() == Some(r.name.as_str()));
-                let def = app.cfg.jobs.iter().find(|j| j.name == r.name).cloned();
+                let def = app.cfg.jobs.iter().find(|j| j.name == r.name);
 
-                row.col(|ui| {
-                    let mut hover = format!("{}.", r.status.label());
-                    if r.dry_run && r.status == JobStatus::Running {
-                        hover.push_str(
-                            "\n\nDry run — reporting what it would do, changing nothing.",
-                        );
-                    }
-                    if !r.last_error.is_empty() {
-                        hover.push_str(&format!("\n\n{}", r.last_error));
-                    }
-                    if r.last_ok_at > 0 {
-                        hover.push_str(&format!("\n\nLast clean run: {}", when(r.last_ok_at)));
-                    }
-                    ui.colored_label(status_color(ui, r.status), r.status.dot())
-                        .on_hover_text(hover);
-                });
-                row.col(|ui| {
-                    ui.label(&r.name);
-                });
-                row.col(|ui| {
-                    match &def {
-                        Some(j) => {
-                            let color = if j.mode.destructive() {
-                                ui.visuals().warn_fg_color
-                            } else {
-                                ui.visuals().text_color()
-                            };
-                            ui.colored_label(color, j.mode.label()).on_hover_text(j.mode.hint());
-                        }
-                        None => {
-                            ui.label("—");
-                        }
-                    };
-                });
-                row.col(|ui| {
-                    let text = def
-                        .as_ref()
-                        .map(|j| format!("{}  →  {}", j.source, j.dest))
-                        .unwrap_or_default();
-                    ui.label(&text).on_hover_text(text.clone());
-                });
-                row.col(|ui| {
-                    if r.status == JobStatus::Running {
-                        let p = &r.progress;
-                        let text = if p.total.is_empty() {
-                            "starting…".to_string()
-                        } else {
-                            format!("{} / {} · {:.0}%", p.transferred, p.total, p.percent)
-                        };
-                        ui.label(text).on_hover_text(format!(
-                            "{} at {}\n{}",
-                            if r.dry_run { "Dry run" } else { "Transferring" },
-                            if p.rate.is_empty() { "—" } else { &p.rate },
-                            if p.eta.is_empty() {
-                                "ETA unknown".to_string()
-                            } else {
-                                format!("ETA {}", p.eta)
-                            }
-                        ));
-                    } else {
-                        ui.weak("—");
-                    }
-                });
-                row.col(|ui| {
-                    ui.label(when(r.finished_at));
-                });
-                row.col(|ui| {
-                    let text = match def.as_ref().map(|j| j.interval_mins) {
-                        Some(0) | None => "—".to_string(),
-                        Some(_) if r.status == JobStatus::Running => "now".to_string(),
-                        Some(_) => {
-                            let left = r.next_run_at - now_unix();
-                            if left <= 0 { "due".to_string() } else { fmt_uptime(left) }
-                        }
-                    };
-                    ui.label(text).on_hover_text(match def.as_ref().map(|j| j.interval_mins) {
-                        Some(0) | None => "This job only runs when you press Run.".to_string(),
-                        Some(m) => format!("Runs every {m} minutes."),
-                    });
-                });
-                row.col(|ui| {
-                    ui.horizontal(|ui| {
-                        let busy = r.status == JobStatus::Running;
-                        if busy {
-                            if ui.small_button("⏹").on_hover_text("Cancel this run.").clicked() {
-                                action = Some((r.name.clone(), JobAction::Cancel));
-                            }
-                        } else if ui.small_button("▶").on_hover_text("Run now.").clicked() {
-                            action = Some((r.name.clone(), JobAction::Run));
-                        }
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("🔍").small())
-                            .on_hover_text(
-                                "Dry run — rclone reports every change it would make and \
-                                 makes none of them. Worth doing before trusting any job \
-                                 that deletes.",
-                            )
-                            .clicked()
-                        {
-                            action = Some((r.name.clone(), JobAction::DryRun));
-                        }
-                        if ui.small_button("✏").on_hover_text("Edit this job.").clicked() {
-                            action = Some((r.name.clone(), JobAction::Edit));
-                        }
-                        if ui.small_button("🗑").on_hover_text("Delete this job.").clicked() {
-                            action = Some((r.name.clone(), JobAction::Delete));
-                        }
-                    });
-                });
+                for c in &cols {
+                    let key = c.key;
+                    row.col(|ui| cell(ui, key, r, def, &mut action));
+                }
 
                 if row.response().clicked() {
                     action = Some((r.name.clone(), JobAction::Select));
@@ -229,6 +115,172 @@ pub fn show(app: &mut TunManApp, ui: &mut egui::Ui) {
 
     if let Some((name, what)) = action {
         apply(app, &name, what);
+    }
+}
+
+/// The columns of the job table, in the order they are drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum C {
+    Dot,
+    Name,
+    Mode,
+    Paths,
+    Progress,
+    LastRun,
+    Next,
+    Actions,
+}
+
+/// Widths and drop order. The paths are the job, so they keep the remaining
+/// width; the schedule columns are the first to go, since a job's own editor
+/// says the same thing and the detail panel below repeats it.
+const COLS: &[ColSpec<C>] = &[
+    ColSpec::keep(C::Dot, 18.0),
+    ColSpec::keep(C::Name, 96.0),
+    ColSpec::opt(C::Mode, 110.0, 3),
+    ColSpec::keep(C::Paths, 200.0).grow(),
+    ColSpec::opt(C::Progress, 150.0, 4),
+    ColSpec::opt(C::LastRun, 84.0, 2),
+    ColSpec::opt(C::Next, 80.0, 1),
+    ColSpec::keep(C::Actions, 112.0),
+];
+
+fn header_cell(ui: &mut egui::Ui, key: C) {
+    let (title, hover) = match key {
+        C::Dot => ("", "● last run succeeded, ◐ running, ▲ failed, ○ never run."),
+        C::Name => ("Name", "Also the tag this job's lines carry in the Log tab."),
+        C::Mode => ("Mode", "What this job does to the destination."),
+        C::Paths => ("Source → destination", "rclone paths, exactly as rclone takes them."),
+        C::Progress => ("Progress", "Live from rclone while a run is in flight."),
+        C::LastRun => ("Last run", "When the last run finished."),
+        C::Next => ("Next", "When the schedule will fire again. Manual jobs show —."),
+        C::Actions => ("", "Run, dry-run, cancel, edit or delete."),
+    };
+    ui.strong(title).on_hover_text(hover);
+}
+
+fn cell(
+    ui: &mut egui::Ui,
+    key: C,
+    r: &JobState,
+    def: Option<&SyncJob>,
+    action: &mut Option<(String, JobAction)>,
+) {
+    match key {
+        C::Dot => {
+            let mut hover = format!("{}.", r.status.label());
+            if r.dry_run && r.status == JobStatus::Running {
+                hover.push_str("\n\nDry run — reporting what it would do, changing nothing.");
+            }
+            if !r.last_error.is_empty() {
+                hover.push_str(&format!("\n\n{}", r.last_error));
+            }
+            if r.last_ok_at > 0 {
+                hover.push_str(&format!("\n\nLast clean run: {}", when(r.last_ok_at)));
+            }
+            ui.colored_label(status_color(ui, r.status), r.status.dot()).on_hover_text(hover);
+        }
+
+        // Carries the whole job in its hover: at a narrow width the name may be
+        // the only column left that identifies the row.
+        C::Name => {
+            let mut hover = r.name.clone();
+            if let Some(j) = def {
+                hover.push_str(&format!("\n\n{}\n{}  →  {}", j.mode.label(), j.source, j.dest));
+            }
+            ui.label(&r.name).on_hover_text(hover);
+        }
+
+        C::Mode => match def {
+            Some(j) => {
+                let color = if j.mode.destructive() {
+                    ui.visuals().warn_fg_color
+                } else {
+                    ui.visuals().text_color()
+                };
+                ui.colored_label(color, j.mode.label()).on_hover_text(j.mode.hint());
+            }
+            None => {
+                ui.label("—");
+            }
+        },
+
+        C::Paths => {
+            let text = def.map(|j| format!("{}  →  {}", j.source, j.dest)).unwrap_or_default();
+            ui.label(&text).on_hover_text(text.clone());
+        }
+
+        C::Progress => {
+            if r.status == JobStatus::Running {
+                let p = &r.progress;
+                let text = if p.total.is_empty() {
+                    "starting…".to_string()
+                } else {
+                    format!("{} / {} · {:.0}%", p.transferred, p.total, p.percent)
+                };
+                ui.label(text).on_hover_text(format!(
+                    "{} at {}\n{}",
+                    if r.dry_run { "Dry run" } else { "Transferring" },
+                    if p.rate.is_empty() { "—" } else { &p.rate },
+                    if p.eta.is_empty() {
+                        "ETA unknown".to_string()
+                    } else {
+                        format!("ETA {}", p.eta)
+                    }
+                ));
+            } else {
+                ui.weak("—");
+            }
+        }
+
+        C::LastRun => {
+            ui.label(when(r.finished_at));
+        }
+
+        C::Next => {
+            let text = match def.map(|j| j.interval_mins) {
+                Some(0) | None => "—".to_string(),
+                Some(_) if r.status == JobStatus::Running => "now".to_string(),
+                Some(_) => {
+                    let left = r.next_run_at - now_unix();
+                    if left <= 0 { "due".to_string() } else { fmt_uptime(left) }
+                }
+            };
+            ui.label(text).on_hover_text(match def.map(|j| j.interval_mins) {
+                Some(0) | None => "This job only runs when you press Run.".to_string(),
+                Some(m) => format!("Runs every {m} minutes."),
+            });
+        }
+
+        C::Actions => {
+            ui.horizontal(|ui| {
+                let busy = r.status == JobStatus::Running;
+                if busy {
+                    if ui.small_button("⏹").on_hover_text("Cancel this run.").clicked() {
+                        *action = Some((r.name.clone(), JobAction::Cancel));
+                    }
+                } else if ui.small_button("▶").on_hover_text("Run now.").clicked() {
+                    *action = Some((r.name.clone(), JobAction::Run));
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("🔍").small())
+                    .on_hover_text(
+                        "Dry run — rclone reports every change it would make and \
+                         makes none of them. Worth doing before trusting any job \
+                         that deletes.",
+                    )
+                    .clicked()
+                {
+                    *action = Some((r.name.clone(), JobAction::DryRun));
+                }
+                if ui.small_button("✏").on_hover_text("Edit this job.").clicked() {
+                    *action = Some((r.name.clone(), JobAction::Edit));
+                }
+                if ui.small_button("🗑").on_hover_text("Delete this job.").clicked() {
+                    *action = Some((r.name.clone(), JobAction::Delete));
+                }
+            });
+        }
     }
 }
 

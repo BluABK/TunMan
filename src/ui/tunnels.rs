@@ -2,12 +2,20 @@
 
 use egui_extras::{Column, TableBuilder};
 
-use crate::supervisor::{Command, Status};
+use crate::model::Tunnel;
+use crate::supervisor::{Command, Status, TunnelState};
+use crate::ui::table::ColSpec;
 use crate::ui::{TunManApp, status_color};
 use crate::util::{fmt_bytes, fmt_rate, fmt_uptime, now_unix};
 
 /// Row height. Fixed so the table can virtualise.
 const ROW_H: f32 = 22.0;
+
+/// How much observed time an availability figure needs before it is worth
+/// showing. Below this the number is dominated by the second or two a tunnel
+/// spends coming up — 20 seconds up out of 21 observed is 95%, which reads as
+/// a fault rather than as arithmetic.
+const AVAIL_SETTLE_SECS: u64 = 120;
 
 pub fn show(app: &mut TunManApp, ui: &mut egui::Ui) {
     totals(app, ui);
@@ -224,355 +232,410 @@ fn cap_hover(st: &crate::supervisor::TunnelState, metered: bool) -> String {
     out
 }
 
+/// The columns of the tunnel table, in the order they are drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum C {
+    Dot,
+    Name,
+    Kind,
+    Geo,
+    Server,
+    Exit,
+    Address,
+    Uptime,
+    Avail,
+    Latency,
+    Conns,
+    Down,
+    Up,
+    Total,
+    Cap,
+    Actions,
+}
+
+/// Widths and drop order.
+///
+/// The four kept columns are what a row needs to be worth showing at all:
+/// which tunnel it is, where to point a client, and the buttons to start or
+/// stop it. Everything else gives way as the window narrows, least useful
+/// first — the totals go before the caps, the caps before the exit address,
+/// and uptime is the last to leave. Nothing is lost by dropping a column:
+/// select the row and the detail panel below spells all of it out.
+const COLS: &[ColSpec<C>] = &[
+    ColSpec::keep(C::Dot, 18.0),
+    ColSpec::keep(C::Name, 96.0),
+    ColSpec::opt(C::Kind, 52.0, 8),
+    ColSpec::opt(C::Geo, 36.0, 6),
+    ColSpec::opt(C::Server, 150.0, 5),
+    ColSpec::opt(C::Exit, 104.0, 3),
+    ColSpec::keep(C::Address, 140.0).grow(),
+    ColSpec::opt(C::Uptime, 62.0, 12),
+    ColSpec::opt(C::Avail, 56.0, 4),
+    ColSpec::opt(C::Latency, 60.0, 7),
+    ColSpec::opt(C::Conns, 46.0, 11),
+    ColSpec::opt(C::Down, 66.0, 10),
+    ColSpec::opt(C::Up, 66.0, 9),
+    ColSpec::opt(C::Total, 108.0, 1),
+    ColSpec::opt(C::Cap, 52.0, 2),
+    ColSpec::keep(C::Actions, 112.0),
+];
+
+fn header_cell(ui: &mut egui::Ui, key: C) {
+    let (title, hover) = match key {
+        C::Dot => ("", "Status at a glance: ● up, ◐ starting or retrying, ▲ failed, ○ stopped."),
+        C::Name => ("Name", "Also the tag this tunnel's lines carry in the Log tab."),
+        C::Kind => ("Kind", "SOCKS (-D), Local (-L) or Remote (-R) forward."),
+        C::Geo => (
+            "Geo",
+            "Country of the tunnel's EXIT, measured by asking through the tunnel itself \
+             rather than by looking up the server's address. Set a manual override when \
+             editing a tunnel if the provider geolocates somewhere misleading.",
+        ),
+        C::Server => (
+            "Server",
+            "The SSH server, with its address from a local DNS lookup so you never have \
+             to resolve the hostname yourself.",
+        ),
+        C::Exit => (
+            "Exit IP",
+            "The address the far side actually presents. Not always the server's own \
+             address — a provider can route egress through a different one, and a \
+             jump-hosted tunnel comes out somewhere else entirely.",
+        ),
+        C::Address => ("Address", "What clients should connect to. Click 📋 to copy it."),
+        C::Uptime => ("Uptime", "How long the forward has been accepting connections."),
+        C::Avail => (
+            "Avail",
+            "Share of the time since this tunnel first started that it has been up. \
+             Counted only while TunMan is running, and reset when TunMan restarts.",
+        ),
+        C::Latency => (
+            "Latency",
+            "Round trip of the last probe, through the tunnel. The hover shows the \
+             average of the last few, which is the number worth trusting — one slow \
+             probe on a busy link is noise.",
+        ),
+        C::Conns => ("Conns", "Sockets open through this tunnel right now."),
+        C::Down => ("↓/s", "Metered tunnels only — bytes arriving through the tunnel."),
+        C::Up => ("↑/s", "Metered tunnels only — bytes leaving through the tunnel."),
+        C::Total => ("Total", "Bytes in / out since this tunnel started, metered only."),
+        C::Cap => (
+            "Cap",
+            "How close this tunnel is to its tightest bandwidth cap. Caps need metering \
+             to be enforceable.",
+        ),
+        C::Actions => ("", "Start, stop, edit, copy the URL, or delete."),
+    };
+    ui.strong(title).on_hover_text(hover);
+}
+
+fn cell(
+    ui: &mut egui::Ui,
+    key: C,
+    r: &TunnelState,
+    def: Option<&Tunnel>,
+    action: &mut Option<(String, RowAction)>,
+) {
+    match key {
+        C::Dot => {
+            let color = status_color(ui, r.status);
+            let mut hover = format!("{}.", r.status.label());
+            if !r.last_error.is_empty() {
+                hover.push_str(&format!("\n\nLast message: {}", r.last_error));
+            }
+            if r.status == Status::Retrying && r.next_retry_at > 0 {
+                let left = (r.next_retry_at - now_unix()).max(0);
+                hover.push_str(&format!("\n\nNext attempt in {}.", fmt_uptime(left)));
+            }
+            if r.stopped_by_cap {
+                hover.push_str(
+                    "\n\nStopped because it hit a bandwidth cap. It will start again \
+                     on its own when the window rolls over.",
+                );
+            }
+            if let Some(ok) = r.probe_ok {
+                hover.push_str(&format!(
+                    "\n\nProbe: {} — {}",
+                    if ok { "reachable" } else { "FAILED" },
+                    r.probe_note
+                ));
+            }
+            ui.colored_label(color, r.status.dot()).on_hover_text(hover);
+        }
+
+        // The name carries a summary, because in a narrow window it may be the
+        // only thing left identifying the row.
+        C::Name => {
+            let mut hover = r.name.clone();
+            if let Some(t) = def {
+                hover.push_str(&format!("\n\n{} to {}", t.kind.label(), t.target()));
+            }
+            if !r.exit_ip.is_empty() {
+                hover.push_str(&format!("\nComes out at {}", r.exit_ip));
+            }
+            hover.push_str("\n\nClick the row for the full picture.");
+            ui.label(&r.name).on_hover_text(hover);
+        }
+
+        C::Kind => {
+            let (label, hover) = match def {
+                Some(t) => (t.kind.label(), t.kind.hint()),
+                None => ("—", "This tunnel is no longer in the config."),
+            };
+            ui.label(label).on_hover_text(hover);
+        }
+
+        // Country of the exit.
+        C::Geo => {
+            let overridden = def.is_some_and(|t| !t.country_override.trim().is_empty());
+            if r.country.is_empty() {
+                let hover = match def {
+                    Some(t) if !t.probeable() => {
+                        "Only a SOCKS tunnel can be asked where it comes out."
+                    }
+                    _ => {
+                        "Not probed yet. Turn on the health probe in Settings to fill \
+                         this in, or set a country manually when editing the tunnel."
+                    }
+                };
+                ui.weak("—").on_hover_text(hover);
+            } else {
+                ui.label(crate::geo::flag(&r.country)).on_hover_text(if overridden {
+                    format!("{} — set manually for this tunnel.", r.country)
+                } else {
+                    format!("{} — measured through the tunnel.", r.country)
+                });
+            }
+        }
+
+        // Server, with its resolved address right beside the hostname.
+        // The resolved address moved into the hover rather than sitting beside
+        // the hostname. A nested horizontal layout inside a table cell is what
+        // made this column render as a 4px sliver: the column sized itself from
+        // its own measured content, the label inside truncated itself to the
+        // width it was offered, and the two fed each other down to nothing. One
+        // label in a fixed-width column cannot collapse that way.
+        C::Server => {
+            let target = def.map(|t| t.target()).unwrap_or_default();
+            ui.label(&target).on_hover_text(if r.server_ip.is_empty() {
+                format!("{target}\n\nAddress not resolved yet.")
+            } else {
+                format!("{target}\nResolves to {} (local DNS lookup).", r.server_ip)
+            });
+        }
+
+        // Exit address.
+        C::Exit => {
+            if r.exit_ip.is_empty() {
+                ui.weak("—").on_hover_text(
+                    "Where this tunnel comes out is only known once it has been \
+                     probed. Enable the health probe in Settings.",
+                );
+            } else {
+                let same = r.exit_ip == r.server_ip;
+                ui.label(egui::RichText::new(&r.exit_ip).monospace()).on_hover_text(if same {
+                    format!(
+                        "{}\n\nSame as the server's own address — traffic comes \
+                         out where it went in.",
+                        r.exit_ip
+                    )
+                } else {
+                    format!(
+                        "{}\n\nDIFFERENT from the server address ({}). The \
+                         provider routes egress elsewhere, or this tunnel is \
+                         jump-hosted.",
+                        r.exit_ip, r.server_ip
+                    )
+                });
+            }
+        }
+
+        C::Address => {
+            let mut text = egui::RichText::new(&r.advertised).monospace();
+            if r.metering {
+                text = text.underline();
+            }
+            ui.label(text).on_hover_text(if r.metering {
+                "Metered: TunMan owns this port and counts every byte through it."
+            } else {
+                "Not metered: connections are visible, byte counts are not."
+            });
+        }
+
+        C::Uptime => {
+            let text = match (r.status, r.up_since) {
+                (Status::Up, Some(since)) => fmt_uptime(now_unix() - since),
+                (Status::Retrying, _) if r.next_retry_at > 0 => {
+                    format!("in {}", fmt_uptime((r.next_retry_at - now_unix()).max(0)))
+                }
+                _ => "—".to_string(),
+            };
+            ui.label(text);
+        }
+
+        // Availability and error history.
+        C::Avail => match r.availability().filter(|_| r.tracked_secs >= AVAIL_SETTLE_SECS) {
+            None => {
+                ui.weak("—").on_hover_text(format!(
+                    "Not enough observed yet — {} of the first {}.
+
+A tunnel that has just                      started is always a second or two short of perfect, and showing that as                      95% would read as a fault rather than as arithmetic.",
+                    fmt_uptime(r.tracked_secs as i64),
+                    fmt_uptime(AVAIL_SETTLE_SECS as i64)
+                ));
+            }
+            Some(frac) => {
+                let pct = frac * 100.0;
+                let color = if pct >= 99.0 {
+                    ui.visuals().text_color()
+                } else if pct >= 90.0 {
+                    ui.visuals().warn_fg_color
+                } else {
+                    ui.visuals().error_fg_color
+                };
+                ui.colored_label(color, format!("{pct:.1}%")).on_hover_text(format!(
+                    "Up for {} of the {} observed since this tunnel first \
+                     started.\n\nRestarts: {}\nConsecutive failures: {}\n\n\
+                     Counted only while TunMan runs, and reset on restart.",
+                    fmt_uptime(r.up_secs as i64),
+                    fmt_uptime(r.tracked_secs as i64),
+                    r.restarts,
+                    r.fails
+                ));
+            }
+        },
+
+        C::Latency => {
+            if r.latency_ms == 0 {
+                ui.weak("—").on_hover_text(
+                    "No probe has completed. Latency comes from the health probe, \
+                     which is off by default — turn it on in Settings.",
+                );
+            } else {
+                let color = if r.latency_ms < 150 {
+                    ui.visuals().text_color()
+                } else if r.latency_ms < 400 {
+                    ui.visuals().warn_fg_color
+                } else {
+                    ui.visuals().error_fg_color
+                };
+                ui.colored_label(color, format!("{} ms", r.latency_ms)).on_hover_text(format!(
+                    "Last probe: {} ms\nAverage of the last few: {} ms\n\n\
+                     A full request through the tunnel and back, so it includes \
+                     the far side's own latency, not just the hop to the server.",
+                    r.latency_ms, r.latency_avg_ms
+                ));
+            }
+        }
+
+        C::Conns => {
+            let n = r.traffic.live_conns();
+            ui.label(if n == 0 { "—".to_string() } else { n.to_string() });
+        }
+
+        C::Down => {
+            let (rin, _) = crate::sampler::rate_of(&r.name);
+            ui.label(if r.metering { fmt_rate(rin) } else { "—".into() });
+        }
+        C::Up => {
+            let (_, rout) = crate::sampler::rate_of(&r.name);
+            ui.label(if r.metering { fmt_rate(rout) } else { "—".into() });
+        }
+
+        C::Total => {
+            use std::sync::atomic::Ordering;
+            if r.metering {
+                let i = r.traffic.total_in.load(Ordering::Relaxed);
+                let o = r.traffic.total_out.load(Ordering::Relaxed);
+                ui.label(format!("{} / {}", fmt_bytes(i), fmt_bytes(o)))
+                    .on_hover_text("Bytes in / out since this tunnel started.");
+            } else {
+                ui.label("—").on_hover_text(
+                    "Turn on Meter for this tunnel to count bytes. Without it \
+                     Windows can name the processes but not their traffic.",
+                );
+            }
+        }
+
+        // Cap headroom.
+        C::Cap => {
+            let hover = cap_hover(r, r.metering);
+            if !r.cap_config.any_set() {
+                ui.weak("—").on_hover_text(hover);
+            } else if !r.metering {
+                ui.colored_label(ui.visuals().error_fg_color, "⚠").on_hover_text(hover);
+            } else {
+                let frac = r.caps_worst();
+                ui.colored_label(cap_color(ui, frac), format!("{:.0}%", (frac * 100.0).min(999.0)))
+                    .on_hover_text(hover);
+            }
+        }
+
+        C::Actions => {
+            ui.horizontal(|ui| {
+                let running = matches!(r.status, Status::Up | Status::Starting | Status::Retrying);
+                if running {
+                    if ui.small_button("⏹").on_hover_text("Stop this tunnel.").clicked() {
+                        *action = Some((r.name.clone(), RowAction::Stop));
+                    }
+                } else if ui.small_button("▶").on_hover_text("Start this tunnel.").clicked() {
+                    *action = Some((r.name.clone(), RowAction::Start));
+                }
+                if ui
+                    .add_enabled(
+                        def.and_then(|t| t.proxy_url()).is_some(),
+                        egui::Button::new("📋").small(),
+                    )
+                    .on_hover_text("Copy this tunnel's proxy URL.")
+                    .clicked()
+                {
+                    *action = Some((r.name.clone(), RowAction::Copy));
+                }
+                if ui.small_button("✏").on_hover_text("Edit this tunnel.").clicked() {
+                    *action = Some((r.name.clone(), RowAction::Edit));
+                }
+                if ui
+                    .small_button("🗑")
+                    .on_hover_text("Delete this tunnel from the config.")
+                    .clicked()
+                {
+                    *action = Some((r.name.clone(), RowAction::Delete));
+                }
+            });
+        }
+    }
+}
+
 fn table(app: &mut TunManApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let mut action: Option<(String, RowAction)> = None;
     let selected = app.selected.clone();
+    let cols = crate::ui::table::fit(COLS, ui.available_width(), ui.spacing().item_spacing.x);
 
-    TableBuilder::new(ui)
+    let mut builder = TableBuilder::new(ui)
         .striped(true)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(18.0)) // status dot
-        .column(Column::auto().at_least(88.0).clip(true)) // name
-        .column(Column::auto().at_least(52.0)) // kind
-        .column(Column::auto().at_least(38.0)) // country
-        .column(Column::auto().at_least(150.0).clip(true)) // server + ip
-        .column(Column::auto().at_least(110.0).clip(true)) // exit ip
-        .column(Column::remainder().at_least(150.0).clip(true)) // advertised
-        .column(Column::auto().at_least(62.0)) // uptime
-        .column(Column::auto().at_least(56.0)) // availability
-        .column(Column::auto().at_least(58.0)) // latency
-        .column(Column::auto().at_least(44.0)) // conns
-        .column(Column::auto().at_least(66.0)) // down rate
-        .column(Column::auto().at_least(66.0)) // up rate
-        .column(Column::auto().at_least(92.0)) // totals
-        .column(Column::auto().at_least(52.0)) // cap
-        .column(Column::auto().at_least(112.0)) // actions
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+    for c in &cols {
+        builder = builder.column(c.column());
+    }
+
+    builder
         .header(20.0, |mut h| {
-            let cell = |h: &mut egui_extras::TableRow, title: &str, hover: &str| {
-                h.col(|ui| {
-                    ui.strong(title).on_hover_text(hover);
-                });
-            };
-            cell(
-                &mut h,
-                "",
-                "Status at a glance: ● up, ◐ starting or retrying, ▲ failed, ○ stopped.",
-            );
-            cell(&mut h, "Name", "Also the tag this tunnel's lines carry in the Log tab.");
-            cell(&mut h, "Kind", "SOCKS (-D), Local (-L) or Remote (-R) forward.");
-            cell(
-                &mut h,
-                "Geo",
-                "Country of the tunnel's EXIT, measured by asking through the tunnel itself \
-                 rather than by looking up the server's address. Set a manual override when \
-                 editing a tunnel if the provider geolocates somewhere misleading.",
-            );
-            cell(
-                &mut h,
-                "Server",
-                "The SSH server, with its address from a local DNS lookup so you never have \
-                 to resolve the hostname yourself.",
-            );
-            cell(
-                &mut h,
-                "Exit IP",
-                "The address the far side actually presents. Not always the server's own \
-                 address — a provider can route egress through a different one, and a \
-                 jump-hosted tunnel comes out somewhere else entirely.",
-            );
-            cell(&mut h, "Address", "What clients should connect to. Click 📋 to copy it.");
-            cell(&mut h, "Uptime", "How long the forward has been accepting connections.");
-            cell(
-                &mut h,
-                "Avail",
-                "Share of the time since this tunnel first started that it has been up. \
-                 Counted only while TunMan is running, and reset when TunMan restarts.",
-            );
-            cell(
-                &mut h,
-                "Latency",
-                "Round trip of the last probe, through the tunnel. The hover shows the \
-                 average of the last few, which is the number worth trusting — one slow \
-                 probe on a busy link is noise.",
-            );
-            cell(&mut h, "Conns", "Sockets open through this tunnel right now.");
-            cell(&mut h, "↓/s", "Metered tunnels only — bytes arriving through the tunnel.");
-            cell(&mut h, "↑/s", "Metered tunnels only — bytes leaving through the tunnel.");
-            cell(&mut h, "Total", "Bytes in / out since this tunnel started, metered only.");
-            cell(
-                &mut h,
-                "Cap",
-                "How close this tunnel is to its tightest bandwidth cap. Caps need metering \
-                 to be enforceable.",
-            );
-            cell(&mut h, "", "Start, stop, edit, copy the URL, or delete.");
+            for c in &cols {
+                let key = c.key;
+                h.col(|ui| header_cell(ui, key));
+            }
         })
         .body(|body| {
             body.rows(ROW_H, app.rows.len(), |mut row| {
                 let r = &app.rows[row.index()];
                 row.set_selected(selected.as_deref() == Some(r.name.as_str()));
-                let def = app.cfg.tunnels.iter().find(|t| t.name == r.name).cloned();
+                let def = app.cfg.tunnels.iter().find(|t| t.name == r.name);
 
-                row.col(|ui| {
-                    let color = status_color(ui, r.status);
-                    let mut hover = format!("{}.", r.status.label());
-                    if !r.last_error.is_empty() {
-                        hover.push_str(&format!("\n\nLast message: {}", r.last_error));
-                    }
-                    if r.status == Status::Retrying && r.next_retry_at > 0 {
-                        let left = (r.next_retry_at - now_unix()).max(0);
-                        hover.push_str(&format!("\n\nNext attempt in {}.", fmt_uptime(left)));
-                    }
-                    if r.stopped_by_cap {
-                        hover.push_str(
-                            "\n\nStopped because it hit a bandwidth cap. It will start again \
-                             on its own when the window rolls over.",
-                        );
-                    }
-                    if let Some(ok) = r.probe_ok {
-                        hover.push_str(&format!(
-                            "\n\nProbe: {} — {}",
-                            if ok { "reachable" } else { "FAILED" },
-                            r.probe_note
-                        ));
-                    }
-                    ui.colored_label(color, r.status.dot()).on_hover_text(hover);
-                });
-                row.col(|ui| {
-                    ui.label(&r.name);
-                });
-                row.col(|ui| {
-                    let (label, hover) = match &def {
-                        Some(t) => (t.kind.label(), t.kind.hint()),
-                        None => ("—", "This tunnel is no longer in the config."),
-                    };
-                    ui.label(label).on_hover_text(hover);
-                });
-
-                // Country of the exit.
-                row.col(|ui| {
-                    let overridden =
-                        def.as_ref().is_some_and(|t| !t.country_override.trim().is_empty());
-                    if r.country.is_empty() {
-                        let hover = match &def {
-                            Some(t) if !t.probeable() => {
-                                "Only a SOCKS tunnel can be asked where it comes out."
-                            }
-                            _ => {
-                                "Not probed yet. Turn on the health probe in Settings to fill \
-                                 this in, or set a country manually when editing the tunnel."
-                            }
-                        };
-                        ui.weak("—").on_hover_text(hover);
-                    } else {
-                        ui.label(crate::geo::flag(&r.country)).on_hover_text(if overridden {
-                            format!("{} — set manually for this tunnel.", r.country)
-                        } else {
-                            format!("{} — measured through the tunnel.", r.country)
-                        });
-                    }
-                });
-
-                // Server, with its resolved address right beside the hostname.
-                row.col(|ui| {
-                    let target = def.as_ref().map(|t| t.target()).unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        ui.label(&target);
-                        if r.server_ip.is_empty() {
-                            ui.weak("·").on_hover_text("Not resolved yet.");
-                        } else {
-                            ui.weak(&r.server_ip);
-                        }
-                    })
-                    .response
-                    .on_hover_text(if r.server_ip.is_empty() {
-                        format!("{target}\n\nAddress not resolved yet.")
-                    } else {
-                        format!("{target}\nResolves to {} (local DNS lookup).", r.server_ip)
-                    });
-                });
-
-                // Exit address.
-                row.col(|ui| {
-                    if r.exit_ip.is_empty() {
-                        ui.weak("—").on_hover_text(
-                            "Where this tunnel comes out is only known once it has been \
-                             probed. Enable the health probe in Settings.",
-                        );
-                    } else {
-                        let same = r.exit_ip == r.server_ip;
-                        ui.label(egui::RichText::new(&r.exit_ip).monospace()).on_hover_text(
-                            if same {
-                                format!(
-                                    "{}\n\nSame as the server's own address — traffic comes \
-                                     out where it went in.",
-                                    r.exit_ip
-                                )
-                            } else {
-                                format!(
-                                    "{}\n\nDIFFERENT from the server address ({}). The \
-                                     provider routes egress elsewhere, or this tunnel is \
-                                     jump-hosted.",
-                                    r.exit_ip, r.server_ip
-                                )
-                            },
-                        );
-                    }
-                });
-
-                row.col(|ui| {
-                    let mut text = egui::RichText::new(&r.advertised).monospace();
-                    if r.metering {
-                        text = text.underline();
-                    }
-                    ui.label(text).on_hover_text(if r.metering {
-                        "Metered: TunMan owns this port and counts every byte through it."
-                    } else {
-                        "Not metered: connections are visible, byte counts are not."
-                    });
-                });
-                row.col(|ui| {
-                    let text = match (r.status, r.up_since) {
-                        (Status::Up, Some(since)) => fmt_uptime(now_unix() - since),
-                        (Status::Retrying, _) if r.next_retry_at > 0 => {
-                            format!("in {}", fmt_uptime((r.next_retry_at - now_unix()).max(0)))
-                        }
-                        _ => "—".to_string(),
-                    };
-                    ui.label(text);
-                });
-
-                // Availability and error history.
-                row.col(|ui| match r.availability() {
-                    None => {
-                        ui.weak("—").on_hover_text("Nothing observed yet.");
-                    }
-                    Some(frac) => {
-                        let pct = frac * 100.0;
-                        let color = if pct >= 99.0 {
-                            ui.visuals().text_color()
-                        } else if pct >= 90.0 {
-                            ui.visuals().warn_fg_color
-                        } else {
-                            ui.visuals().error_fg_color
-                        };
-                        ui.colored_label(color, format!("{pct:.1}%")).on_hover_text(format!(
-                            "Up for {} of the {} observed since this tunnel first \
-                                 started.\n\nRestarts: {}\nConsecutive failures: {}\n\n\
-                                 Counted only while TunMan runs, and reset on restart.",
-                            fmt_uptime(r.up_secs as i64),
-                            fmt_uptime(r.tracked_secs as i64),
-                            r.restarts,
-                            r.fails
-                        ));
-                    }
-                });
-
-                // Latency.
-                row.col(|ui| {
-                    if r.latency_ms == 0 {
-                        ui.weak("—").on_hover_text(
-                            "No probe has completed. Latency comes from the health probe, \
-                             which is off by default — turn it on in Settings.",
-                        );
-                    } else {
-                        let color = if r.latency_ms < 150 {
-                            ui.visuals().text_color()
-                        } else if r.latency_ms < 400 {
-                            ui.visuals().warn_fg_color
-                        } else {
-                            ui.visuals().error_fg_color
-                        };
-                        ui.colored_label(color, format!("{} ms", r.latency_ms)).on_hover_text(
-                            format!(
-                                "Last probe: {} ms\nAverage of the last few: {} ms\n\n\
-                                 A full request through the tunnel and back, so it includes \
-                                 the far side's own latency, not just the hop to the server.",
-                                r.latency_ms, r.latency_avg_ms
-                            ),
-                        );
-                    }
-                });
-
-                row.col(|ui| {
-                    let n = r.traffic.live_conns();
-                    ui.label(if n == 0 { "—".to_string() } else { n.to_string() });
-                });
-
-                let (rin, rout) = crate::sampler::rate_of(&r.name);
-                row.col(|ui| {
-                    ui.label(if r.metering { fmt_rate(rin) } else { "—".into() });
-                });
-                row.col(|ui| {
-                    ui.label(if r.metering { fmt_rate(rout) } else { "—".into() });
-                });
-                row.col(|ui| {
-                    use std::sync::atomic::Ordering;
-                    if r.metering {
-                        let i = r.traffic.total_in.load(Ordering::Relaxed);
-                        let o = r.traffic.total_out.load(Ordering::Relaxed);
-                        ui.label(format!("{} / {}", fmt_bytes(i), fmt_bytes(o)))
-                            .on_hover_text("Bytes in / out since this tunnel started.");
-                    } else {
-                        ui.label("—").on_hover_text(
-                            "Turn on Meter for this tunnel to count bytes. Without it \
-                             Windows can name the processes but not their traffic.",
-                        );
-                    }
-                });
-
-                // Cap headroom.
-                row.col(|ui| {
-                    let hover = cap_hover(r, r.metering);
-                    if !r.cap_config.any_set() {
-                        ui.weak("—").on_hover_text(hover);
-                    } else if !r.metering {
-                        ui.colored_label(ui.visuals().error_fg_color, "⚠").on_hover_text(hover);
-                    } else {
-                        let frac = r.caps_worst();
-                        ui.colored_label(
-                            cap_color(ui, frac),
-                            format!("{:.0}%", (frac * 100.0).min(999.0)),
-                        )
-                        .on_hover_text(hover);
-                    }
-                });
-
-                row.col(|ui| {
-                    ui.horizontal(|ui| {
-                        let running =
-                            matches!(r.status, Status::Up | Status::Starting | Status::Retrying);
-                        if running {
-                            if ui.small_button("⏹").on_hover_text("Stop this tunnel.").clicked() {
-                                action = Some((r.name.clone(), RowAction::Stop));
-                            }
-                        } else if ui.small_button("▶").on_hover_text("Start this tunnel.").clicked()
-                        {
-                            action = Some((r.name.clone(), RowAction::Start));
-                        }
-                        if ui
-                            .add_enabled(
-                                def.as_ref().and_then(|t| t.proxy_url()).is_some(),
-                                egui::Button::new("📋").small(),
-                            )
-                            .on_hover_text("Copy this tunnel's proxy URL.")
-                            .clicked()
-                        {
-                            action = Some((r.name.clone(), RowAction::Copy));
-                        }
-                        if ui.small_button("✏").on_hover_text("Edit this tunnel.").clicked() {
-                            action = Some((r.name.clone(), RowAction::Edit));
-                        }
-                        if ui
-                            .small_button("🗑")
-                            .on_hover_text("Delete this tunnel from the config.")
-                            .clicked()
-                        {
-                            action = Some((r.name.clone(), RowAction::Delete));
-                        }
-                    });
-                });
+                for c in &cols {
+                    let key = c.key;
+                    row.col(|ui| cell(ui, key, r, def, &mut action));
+                }
 
                 if row.response().clicked() {
                     action = Some((r.name.clone(), RowAction::Select));
@@ -632,6 +695,104 @@ fn apply(app: &mut TunManApp, name: &str, what: RowAction, ctx: &egui::Context) 
     }
 }
 
+/// Everything the table can drop when the window is narrow, spelled out for
+/// the selected tunnel. It wraps, so it survives any width — which is the
+/// point: no fact in this app is reachable only through a wide window.
+fn facts(app: &TunManApp, ui: &mut egui::Ui, state: &crate::supervisor::TunnelState) {
+    let def = app.cfg.tunnels.iter().find(|t| t.name == state.name);
+    let dash = |s: &str| if s.is_empty() { "—".to_string() } else { s.to_string() };
+
+    let mut items: Vec<(&str, String, &str)> = Vec::new();
+    if let Some(t) = def {
+        items.push(("Kind", t.kind.label().to_string(), t.kind.hint()));
+        items.push(("Server", t.target(), "The SSH server this tunnel connects to."));
+    }
+    items.push((
+        "Address",
+        state.advertised.clone(),
+        "What clients connect to. Underlined in the table when metered.",
+    ));
+    items.push((
+        "Server IP",
+        dash(&state.server_ip),
+        "The server's address from a local DNS lookup.",
+    ));
+    items.push((
+        "Exit IP",
+        dash(&state.exit_ip),
+        "Where the far side actually comes out, measured through the tunnel.",
+    ));
+    items.push((
+        "Geo",
+        if state.country.is_empty() {
+            "—".to_string()
+        } else {
+            format!("{} {}", crate::geo::flag(&state.country), state.country)
+        },
+        "Country of the exit. Needs the health probe, or a manual override.",
+    ));
+    items.push((
+        "Uptime",
+        match (state.status, state.up_since) {
+            (Status::Up, Some(since)) => fmt_uptime(now_unix() - since),
+            _ => "—".to_string(),
+        },
+        "How long the forward has been accepting connections.",
+    ));
+    items.push((
+        "Avail",
+        match state.availability().filter(|_| state.tracked_secs >= AVAIL_SETTLE_SECS) {
+            Some(f) => format!("{:.1}%", f * 100.0),
+            None => "—".to_string(),
+        },
+        "Share of the observed time this tunnel has been up, since TunMan started.          Held back until a couple of minutes have been observed.",
+    ));
+    items.push((
+        "Latency",
+        if state.latency_ms == 0 {
+            "—".to_string()
+        } else {
+            format!("{} ms (avg {})", state.latency_ms, state.latency_avg_ms)
+        },
+        "Round trip of the last probe, through the tunnel.",
+    ));
+    if state.metering {
+        use std::sync::atomic::Ordering;
+        let (rin, rout) = crate::sampler::rate_of(&state.name);
+        items.push((
+            "Rate",
+            format!("↓ {}  ↑ {}", fmt_rate(rin), fmt_rate(rout)),
+            "Current throughput, counted by TunMan's own listener.",
+        ));
+        items.push((
+            "Total",
+            format!(
+                "{} / {}",
+                fmt_bytes(state.traffic.total_in.load(Ordering::Relaxed)),
+                fmt_bytes(state.traffic.total_out.load(Ordering::Relaxed))
+            ),
+            "Bytes in / out since this tunnel started.",
+        ));
+    }
+    if state.cap_config.any_set() {
+        items.push((
+            "Cap",
+            format!("{:.0}%", (state.caps_worst() * 100.0).min(999.0)),
+            "How close this tunnel is to its tightest bandwidth cap.",
+        ));
+    }
+
+    ui.horizontal_wrapped(|ui| {
+        for (i, (label, value, hover)) in items.iter().enumerate() {
+            if i > 0 {
+                ui.separator();
+            }
+            ui.weak(*label);
+            ui.label(value).on_hover_text(*hover);
+        }
+    });
+}
+
 /// The per-tunnel detail: who is connected, and to what.
 fn detail(app: &mut TunManApp, ui: &mut egui::Ui) {
     let Some(name) = app.selected.clone() else { return };
@@ -655,6 +816,8 @@ fn detail(app: &mut TunManApp, ui: &mut egui::Ui) {
             }
         });
     });
+
+    facts(app, ui, &state);
 
     if !state.last_error.is_empty() {
         ui.horizontal_wrapped(|ui| {
@@ -744,4 +907,57 @@ fn detail(app: &mut TunManApp, ui: &mut egui::Ui) {
                 });
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(width: f32) -> Vec<C> {
+        crate::ui::table::fit(COLS, width, 8.0).iter().map(|c| c.key).collect()
+    }
+
+    /// The report that prompted this: a window about 1030px wide, where the
+    /// last five columns — including every button on the row — had run off the
+    /// right-hand edge, so a tunnel could not be stopped or edited without
+    /// resizing the window first.
+    #[test]
+    fn a_row_stays_operable_at_every_width_the_window_allows() {
+        // 720 is the minimum inner width the viewport permits.
+        for w in [720.0_f32, 900.0, 1030.0, 1280.0, 1920.0] {
+            let keys = at(w);
+            assert!(keys.contains(&C::Actions), "no buttons at {w}px: {keys:?}");
+            assert!(keys.contains(&C::Name), "unidentifiable row at {w}px");
+            assert!(keys.contains(&C::Address), "no address at {w}px");
+            assert!(keys.contains(&C::Dot), "no status at {w}px");
+        }
+    }
+
+    /// What survives at the narrowest supported width. Not arbitrary: these
+    /// are the columns worth the space when there is almost none — is it up,
+    /// for how long, and is anything actually going through it.
+    #[test]
+    fn the_narrowest_window_keeps_the_columns_worth_keeping() {
+        assert_eq!(
+            at(720.0),
+            vec![C::Dot, C::Name, C::Address, C::Uptime, C::Conns, C::Down, C::Up, C::Actions]
+        );
+    }
+
+    #[test]
+    fn a_wide_window_still_shows_everything() {
+        assert_eq!(at(1920.0).len(), COLS.len());
+    }
+
+    /// Sanity on the ranks themselves: every optional column has a distinct
+    /// one, or two columns would trade places from frame to frame as the
+    /// window is dragged.
+    #[test]
+    fn the_drop_order_is_unambiguous() {
+        let mut ranks: Vec<u8> = COLS.iter().map(|c| c.rank).filter(|r| *r > 0).collect();
+        let before = ranks.len();
+        ranks.sort_unstable();
+        ranks.dedup();
+        assert_eq!(ranks.len(), before, "duplicate drop ranks in COLS");
+    }
 }
