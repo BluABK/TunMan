@@ -343,6 +343,16 @@ cargo clippy
 cargo fmt
 ```
 
+**Quit TunMan before rebuilding.** Windows locks a running executable, so
+`cargo build --release` fails with `failed to remove file ... Access is denied
+(os error 5)` and the old binary stays where it is. It is easy to read that as
+a build that did nothing, and then to wonder why a change is missing from a
+program that was never rebuilt.
+
+After the exe is replaced, a Start Menu entry can still show the *previous*
+icon: the shell caches shortcut icons, and the cache does not notice that the
+file behind one changed. `ie4uinit.exe -show` rebuilds it.
+
 Requires an `ssh` binary; Windows ships one at
 `C:\Windows\System32\OpenSSH\ssh.exe`. Mounts and sync jobs need
 [rclone](https://rclone.org/), and mounting needs
