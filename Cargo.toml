@@ -1,0 +1,57 @@
+[package]
+name = "tunman"
+version = "0.1.0"
+edition = "2024"
+description = "SSH tunnel manager with live per-process and per-destination traffic"
+build = "build.rs"
+
+[dependencies]
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+egui = "0.36.1"
+egui_extras = { version = "0.36.1", features = ["serde"] }
+egui_plot = "0.37"
+tray-icon = "0.24.1"
+
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "fs"] }
+
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
+anyhow = "1.0"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+directories = "6.0"
+parking_lot = "0.12"
+regex-lite = "0.1"
+rfd = "0.17"
+auto-launch = "0.6"
+
+# Only for the optional StreamArchiver hand-off, which is off by default.
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+
+# egui and image decoding are unusably slow unoptimised — scrolling judders and
+# a debug run spends most of its time in tessellation. Optimise dependencies
+# even in dev; keep our own crate at 1 so backtraces stay readable.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+panic = "abort"

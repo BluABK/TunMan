@@ -1,0 +1,5 @@
+# Set from day one so `cargo fmt` is always safe here. (StreamArchiver has no
+# rustfmt.toml and has drifted far enough that a bare `cargo fmt` rewrites 87
+# files — starting clean avoids inheriting that problem.)
+max_width = 100
+use_small_heuristics = "Max"
