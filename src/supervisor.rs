@@ -150,7 +150,7 @@ impl TunnelState {
             self.latency_history.remove(0);
         }
         let n = self.latency_history.len() as u64;
-        self.latency_avg_ms = if n == 0 { 0 } else { self.latency_history.iter().sum::<u64>() / n };
+        self.latency_avg_ms = self.latency_history.iter().sum::<u64>().checked_div(n).unwrap_or(0);
     }
 
     /// Fraction of observed time this tunnel has been up, or `None` before
@@ -523,6 +523,7 @@ impl TunnelTask {
             }
         };
         let pid = child.id().unwrap_or(0);
+        adopt(&child);
         self.shared.update(&name, |s| s.pid = Some(pid));
 
         // Two separate readers: reading one pipe while the other fills is a
@@ -667,6 +668,21 @@ enum RunOutcome {
     Stopped,
     /// Died on its own, with whatever it last said.
     Exited(String),
+}
+
+/// Put a spawned child in the kill-on-exit job, so it cannot outlive us even
+/// if we are killed outright rather than shut down.
+pub(crate) fn adopt(child: &tokio::process::Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        if let Some(h) = child.raw_handle() {
+            crate::platform::adopt_child(h as isize);
+        }
+        let _ = std::io::stdout().as_raw_handle();
+    }
+    #[cfg(not(windows))]
+    let _ = child;
 }
 
 /// Copy a child's output into the log, one line at a time.

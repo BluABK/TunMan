@@ -370,6 +370,456 @@ pub fn show_editor(app: &mut TunManApp, ctx: &egui::Context) {
     }
 }
 
+// ----------------------------------------------------------------- mounts ---
+
+/// A mount being edited. A draft, for the same reason tunnels use one: editing
+/// the live config in place would remount on every keystroke.
+pub struct MountEdit {
+    pub draft: crate::mounts::Mount,
+    pub index: Option<usize>,
+    pub original_name: String,
+}
+
+impl MountEdit {
+    pub fn new(draft: crate::mounts::Mount, index: Option<usize>) -> MountEdit {
+        let original_name = draft.name.clone();
+        MountEdit { draft, index, original_name }
+    }
+}
+
+pub fn show_mount_editor(app: &mut TunManApp, ctx: &egui::Context) {
+    use crate::mounts::MountKind;
+
+    let Some(mut ed) = app.mount_editor.take() else { return };
+    let mut open = true;
+    let mut save = false;
+    let mut cancel = false;
+
+    egui::Window::new(if ed.index.is_some() { "Edit mount" } else { "New mount" })
+        .open(&mut open)
+        .resizable(false)
+        .collapsible(false)
+        .default_width(440.0)
+        .show(ctx, |ui| {
+            egui::Grid::new("mount_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                ui.label("Name").on_hover_text("Identifies the mount in the table and the log.");
+                ui.text_edit_singleline(&mut ed.draft.name);
+                ui.end_row();
+
+                ui.label("Via").on_hover_text(crate::ui::mounts::kind_hint(ed.draft.kind));
+                egui::ComboBox::from_id_salt("mount_kind")
+                    .selected_text(ed.draft.kind.label())
+                    .show_ui(ui, |ui| {
+                        for k in MountKind::ALL {
+                            ui.selectable_value(&mut ed.draft.kind, k, k.label())
+                                .on_hover_text(crate::ui::mounts::kind_hint(k));
+                        }
+                    });
+                ui.end_row();
+
+                if ed.draft.kind == MountKind::Rclone {
+                    ui.label("Remote").on_hover_text(
+                        "An rclone remote and optional path, like `nas:backups`. The list \
+                         comes from your own rclone config.",
+                    );
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut ed.draft.remote)
+                                .desired_width(200.0)
+                                .hint_text("remote:path"),
+                        );
+                        egui::ComboBox::from_id_salt("remote_pick")
+                            .selected_text("Pick")
+                            .width(80.0)
+                            .show_ui(ui, |ui| {
+                                if app.rclone_remotes.is_empty() {
+                                    ui.weak("No remotes configured");
+                                }
+                                for r in &app.rclone_remotes {
+                                    if ui.selectable_label(false, r).clicked() {
+                                        ed.draft.remote = r.clone();
+                                    }
+                                }
+                            });
+                    });
+                    ui.end_row();
+                } else {
+                    ui.label("User").on_hover_text("Leave blank to use your local username.");
+                    ui.text_edit_singleline(&mut ed.draft.user);
+                    ui.end_row();
+
+                    ui.label("Host").on_hover_text("The ssh server to mount from.");
+                    ui.text_edit_singleline(&mut ed.draft.host);
+                    ui.end_row();
+
+                    ui.label("SSH port");
+                    ui.add(egui::DragValue::new(&mut ed.draft.ssh_port).range(1..=65535));
+                    ui.end_row();
+
+                    ui.label("Remote path").on_hover_text("The directory on the server.");
+                    ui.text_edit_singleline(&mut ed.draft.remote_path);
+                    ui.end_row();
+
+                    ui.label("Key file").on_hover_text("Optional; blank uses your agent.");
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut ed.draft.identity_file);
+                        if ui.button("…").clicked()
+                            && let Some(p) = rfd::FileDialog::new().pick_file()
+                        {
+                            ed.draft.identity_file = p.display().to_string();
+                        }
+                    });
+                    ui.end_row();
+                }
+
+                ui.label("Mount at").on_hover_text(
+                    "A free drive letter like `X:`, or an empty directory. The letter must \
+                     not already be in use.",
+                );
+                ui.text_edit_singleline(&mut ed.draft.target);
+                ui.end_row();
+
+                ui.separator();
+                ui.end_row();
+
+                ui.label("Retry delay").on_hover_text(
+                    "Seconds to wait before reconnecting after a drop. Zero uses the same \
+                     doubling backoff tunnels use (5s up to 5 minutes). Set a fixed value \
+                     for a server that reacts badly to being prodded — some will ban a \
+                     client that reconnects the instant it drops rather than let it back in.",
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut ed.draft.retry_delay_secs)
+                            .range(0..=3600)
+                            .suffix(" s"),
+                    );
+                    if ed.draft.retry_delay_secs == 0 {
+                        ui.weak("(backoff)");
+                    }
+                });
+                ui.end_row();
+
+                ui.label("Give up after").on_hover_text(
+                    "Stop retrying after this many consecutive failures. Zero keeps trying \
+                     indefinitely, which is usually what you want for a mount you rely on.",
+                );
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut ed.draft.max_retries).range(0..=1000));
+                    if ed.draft.max_retries == 0 {
+                        ui.weak("(never)");
+                    }
+                });
+                ui.end_row();
+
+                ui.label("Options");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut ed.draft.enabled, "Enabled");
+                    ui.checkbox(&mut ed.draft.auto_start, "Mount when TunMan starts");
+                    ui.checkbox(&mut ed.draft.read_only, "Read-only")
+                        .on_hover_text("Worth having on anything you only ever read from.");
+                    if ed.draft.kind == MountKind::Rclone {
+                        ui.checkbox(&mut ed.draft.vfs_cache, "Write cache").on_hover_text(
+                            "Lets ordinary programs modify files. Without it rclone refuses \
+                             the read-modify-write that most Windows software does \
+                             constantly, and the mount reads as broken for anything but \
+                             streaming.",
+                        );
+                    }
+                });
+                ui.end_row();
+
+                ui.label("Extra args").on_hover_text("Passed to the tool verbatim.");
+                let mut extra = ed.draft.extra_args.join(" ");
+                if ui.text_edit_singleline(&mut extra).changed() {
+                    ed.draft.extra_args = extra.split_whitespace().map(|s| s.to_string()).collect();
+                }
+                ui.end_row();
+            });
+
+            ui.separator();
+            let (prog, args) = crate::mounts::args(
+                &ed.draft,
+                &app.cfg.settings.rclone_path,
+                &app.cfg.settings.sshfs_path,
+            );
+            ui.weak("Command");
+            ui.label(egui::RichText::new(format!("{prog} {}", args.join(" "))).monospace().weak());
+
+            let problems = ed.draft.validate();
+            let taken = app
+                .cfg
+                .mounts
+                .iter()
+                .enumerate()
+                .any(|(i, m)| m.name == ed.draft.name && Some(i) != ed.index);
+            if taken {
+                ui.colored_label(ui.visuals().error_fg_color, "Another mount has that name.");
+            }
+            for p in &problems {
+                ui.colored_label(ui.visuals().error_fg_color, p);
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                let ok = problems.is_empty() && !taken;
+                if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
+                    save = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if save {
+        if ed.index.is_some() && ed.original_name != ed.draft.name {
+            app.send_mount(crate::jobs::MountCommand::Stop(ed.original_name.clone()));
+            app.mount_shared.states.lock().remove(&ed.original_name);
+        }
+        match ed.index {
+            Some(i) if i < app.cfg.mounts.len() => app.cfg.mounts[i] = ed.draft.clone(),
+            _ => app.cfg.mounts.push(ed.draft.clone()),
+        }
+        app.save_config();
+        return;
+    }
+    if !cancel && open {
+        app.mount_editor = Some(ed);
+    }
+}
+
+// ------------------------------------------------------------------ sync ----
+
+/// A sync job being edited.
+pub struct JobEdit {
+    pub draft: crate::sync::SyncJob,
+    pub index: Option<usize>,
+    pub original_name: String,
+}
+
+impl JobEdit {
+    pub fn new(draft: crate::sync::SyncJob, index: Option<usize>) -> JobEdit {
+        let original_name = draft.name.clone();
+        JobEdit { draft, index, original_name }
+    }
+}
+
+pub fn show_job_editor(app: &mut TunManApp, ctx: &egui::Context) {
+    use crate::sync::SyncMode;
+
+    let Some(mut ed) = app.job_editor.take() else { return };
+    let mut open = true;
+    let mut save = false;
+    let mut cancel = false;
+
+    egui::Window::new(if ed.index.is_some() { "Edit sync job" } else { "New sync job" })
+        .open(&mut open)
+        .resizable(false)
+        .collapsible(false)
+        .default_width(460.0)
+        .show(ctx, |ui| {
+            egui::Grid::new("job_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                ui.label("Name").on_hover_text("Identifies the job in the table and the log.");
+                ui.text_edit_singleline(&mut ed.draft.name);
+                ui.end_row();
+
+                ui.label("Mode").on_hover_text(ed.draft.mode.hint());
+                egui::ComboBox::from_id_salt("job_mode")
+                    .selected_text(ed.draft.mode.label())
+                    .show_ui(ui, |ui| {
+                        for m in SyncMode::ALL {
+                            ui.selectable_value(&mut ed.draft.mode, m, m.label())
+                                .on_hover_text(m.hint());
+                        }
+                    });
+                ui.end_row();
+
+                let pick =
+                    |ui: &mut egui::Ui, field: &mut String, remotes: &[String], salt: &str| {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(field).desired_width(210.0));
+                            egui::ComboBox::from_id_salt(salt)
+                                .selected_text("Pick")
+                                .width(76.0)
+                                .show_ui(ui, |ui| {
+                                    if remotes.is_empty() {
+                                        ui.weak("No remotes configured");
+                                    }
+                                    for r in remotes {
+                                        if ui.selectable_label(false, r).clicked() {
+                                            *field = r.clone();
+                                        }
+                                    }
+                                });
+                        });
+                    };
+
+                ui.label("Source").on_hover_text(
+                    "An rclone path: a remote like `nas:photos`, or a local path.",
+                );
+                pick(ui, &mut ed.draft.source, &app.rclone_remotes, "src_pick");
+                ui.end_row();
+
+                ui.label("Destination").on_hover_text("Where it goes. Also an rclone path.");
+                pick(ui, &mut ed.draft.dest, &app.rclone_remotes, "dst_pick");
+                ui.end_row();
+
+                ui.label("Every").on_hover_text(
+                    "Run automatically this often. Zero means the job only runs when you \
+                     press Run.",
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut ed.draft.interval_mins)
+                            .range(0..=10080)
+                            .suffix(" min"),
+                    );
+                    if ed.draft.interval_mins == 0 {
+                        ui.weak("(manual)");
+                    }
+                });
+                ui.end_row();
+
+                ui.separator();
+                ui.end_row();
+
+                ui.label("Safety");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut ed.draft.enabled, "Enabled");
+                    if ed.draft.mode == SyncMode::Bisync {
+                        ui.checkbox(&mut ed.draft.resync, "Establish baseline (--resync)")
+                            .on_hover_text(
+                                "rclone refuses to bisync without a baseline. Tick this for \
+                                 the first run of a new pair; it is cleared once it works.",
+                            );
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Skip files newer than");
+                        ui.add(
+                            egui::DragValue::new(&mut ed.draft.min_age_secs)
+                                .range(0..=86400)
+                                .suffix(" s"),
+                        );
+                    })
+                    .response
+                    .on_hover_text(
+                        "Avoids copying a file that is still being written. Zero copies \
+                         everything.",
+                    );
+                });
+                ui.end_row();
+
+                ui.label("Backup dir").on_hover_text(
+                    "Files that would be deleted or replaced are moved here instead. The \
+                     single most useful safety net for a mode that deletes — set it and a \
+                     mistake is recoverable.",
+                );
+                ui.text_edit_singleline(&mut ed.draft.backup_dir);
+                ui.end_row();
+
+                ui.label("Bandwidth limit")
+                    .on_hover_text("An rclone bandwidth ceiling like `8M`. Empty means unlimited.");
+                ui.add(
+                    egui::TextEdit::singleline(&mut ed.draft.bwlimit)
+                        .hint_text("unlimited")
+                        .desired_width(90.0),
+                );
+                ui.end_row();
+
+                ui.label("Extra args").on_hover_text("Passed to rclone verbatim.");
+                let mut extra = ed.draft.extra_args.join(" ");
+                if ui.text_edit_singleline(&mut extra).changed() {
+                    ed.draft.extra_args = extra.split_whitespace().map(|s| s.to_string()).collect();
+                }
+                ui.end_row();
+            });
+
+            if ed.draft.mode.destructive() {
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(ui.visuals().warn_fg_color, "⚠");
+                    ui.colored_label(ui.visuals().warn_fg_color, ed.draft.mode.hint());
+                });
+                if ed.draft.backup_dir.trim().is_empty() {
+                    ui.weak(
+                        "Consider setting a backup dir, so anything this deletes is moved \
+                         aside rather than destroyed.",
+                    );
+                }
+            }
+
+            ui.separator();
+            ui.weak("Command");
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} {}",
+                    app.cfg.settings.rclone_path,
+                    crate::sync::args(&ed.draft, false).join(" ")
+                ))
+                .monospace()
+                .weak(),
+            );
+
+            let problems = ed.draft.validate();
+            let taken = app
+                .cfg
+                .jobs
+                .iter()
+                .enumerate()
+                .any(|(i, j)| j.name == ed.draft.name && Some(i) != ed.index);
+            if taken {
+                ui.colored_label(ui.visuals().error_fg_color, "Another job has that name.");
+            }
+            for p in &problems {
+                ui.colored_label(ui.visuals().error_fg_color, p);
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                let ok = problems.is_empty() && !taken;
+                if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
+                    save = true;
+                }
+                if ui
+                    .add_enabled(ok, egui::Button::new("Save & dry run"))
+                    .on_hover_text(
+                        "Save, then immediately show what this job would do without doing \
+                         any of it.",
+                    )
+                    .clicked()
+                {
+                    save = true;
+                    app.pending_dry_run = Some(ed.draft.name.clone());
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if save {
+        if ed.index.is_some() && ed.original_name != ed.draft.name {
+            app.sync_shared.states.lock().remove(&ed.original_name);
+        }
+        match ed.index {
+            Some(i) if i < app.cfg.jobs.len() => app.cfg.jobs[i] = ed.draft.clone(),
+            _ => app.cfg.jobs.push(ed.draft.clone()),
+        }
+        app.save_config();
+        if let Some(name) = app.pending_dry_run.take() {
+            app.send_sync(crate::jobs::SyncCommand::Run { name: name.clone(), dry_run: true });
+            app.selected_job = Some(name);
+            app.tab = crate::ui::Tab::Sync;
+        }
+        return;
+    }
+    if !cancel && open {
+        app.mount_editor = app.mount_editor.take();
+        app.job_editor = Some(ed);
+    }
+}
+
 pub fn show_settings(app: &mut TunManApp, ctx: &egui::Context) {
     if !app.settings_open {
         return;
@@ -397,6 +847,41 @@ pub fn show_settings(app: &mut TunManApp, ctx: &egui::Context) {
                         cfg.ssh_path = p.display().to_string();
                     }
                 });
+                ui.end_row();
+
+                ui.label("rclone").on_hover_text(
+                    "Used by mounts and every sync job. Left as \"rclone\" it resolves on                      PATH.",
+                );
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut cfg.rclone_path);
+                    if ui.button("…").clicked()
+                        && let Some(p) = rfd::FileDialog::new().pick_file()
+                    {
+                        cfg.rclone_path = p.display().to_string();
+                    }
+                });
+                ui.end_row();
+
+                ui.label("sshfs").on_hover_text(
+                    "Only needed for sshfs mounts. On Windows this comes from sshfs-win, a                      separate install — an rclone remote on the sftp backend mounts an ssh                      server the same way without it.",
+                );
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut cfg.sshfs_path);
+                    if ui.button("…").clicked()
+                        && let Some(p) = rfd::FileDialog::new().pick_file()
+                    {
+                        cfg.sshfs_path = p.display().to_string();
+                    }
+                    if !crate::mounts::sshfs_candidates().iter().any(|p| p.exists())
+                        && cfg.sshfs_path == "sshfs"
+                    {
+                        ui.colored_label(ui.visuals().warn_fg_color, "?")
+                            .on_hover_text("sshfs-win does not appear to be installed here.");
+                    }
+                });
+                ui.end_row();
+
+                ui.separator();
                 ui.end_row();
 
                 ui.label("Start-up");

@@ -1,8 +1,8 @@
 # TunMan
 
 An SSH tunnel manager for Windows. Keeps a handful of `ssh` forwards up, shows
-which processes are using each one and how much is going through it, and lives
-in the tray.
+which processes are using each one and how much is going through it, mounts
+remote filesystems, runs rclone sync jobs, and lives in the tray.
 
 It is **standalone**. It was written to feed StreamArchiver's proxy pool with
 `socks5h://` endpoints, but nothing here depends on StreamArchiver — that
@@ -10,16 +10,16 @@ hand-off is one optional button, off by default.
 
 ```
 TunMan v0.1.0
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Tunnels │ Traffic │ Log                                              ⚙   │
-├──────────────────────────────────────────────────────────────────────────┤
-│ 2 up · 1 down · 7 connections · ↓ 1.2 MB/s ↑ 84 KB/s                    │
-│ ➕ Add  ▶ Start all  ⏹ Stop all │ 📋 Copy all URLs  📤 Export │ 📂 Logs   │
-├──────────────────────────────────────────────────────────────────────────┤
-│ ● vps-fi  SOCKS  blu@fi.example.org  socks5h://127.0.0.1:1080  4h 12m    │
-│ ● vps-de  SOCKS  blu@de.example.org  socks5h://127.0.0.1:1081  4h 12m    │
-│ ○ db      Local  blu@bastion         127.0.0.1:5432            —         │
-└──────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Tunnels │ Mounts │ Sync │ Traffic │ Log                              ⚙     │
+├────────────────────────────────────────────────────────────────────────────┤
+│ 2 up · 1 down · 7 connections · ↓ 1.2 MB/s ↑ 84 KB/s                      │
+├────────────────────────────────────────────────────────────────────────────┤
+│    Name    Geo  Server              Exit IP      Avail  Lat    Cap        │
+│ ●  vps-fi  🇫🇮   blu@fi.ex 95.216.1.2  95.216.1.2   99.8%  42ms   61%       │
+│ ●  vps-de  🇩🇪   blu@de.ex 116.202.1.2 116.202.1.2  100%   31ms   12%       │
+│ ○  db      —    blu@bastion 10.0.0.9   —            —      —      —        │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## What it does
@@ -44,9 +44,65 @@ nothing. So a tunnel is only reported *up* once its port actually accepts a
 connection, and the optional health probe goes further: it drives a real SOCKS
 CONNECT through the proxy to a host you choose.
 
-**Closing the window hides it.** Tunnels keep running; quit from the tray. On
-exit every `ssh` process is killed along with its own helpers — a tunnel manager
-that leaves orphans holding ports is worse than one that drops them.
+**Closing the window hides it.** Tunnels keep running; quit from the tray.
+
+**Nothing outlives TunMan.** A clean quit stops every child and its own helpers.
+A *crash* or a `taskkill /F` skips every destructor, so children are also placed
+in a Windows job object that the kernel tears down when TunMan's handle closes —
+however it closes. Without that, killing TunMan left an `rclone mount` running
+with its drive letter still claimed, which is exactly the orphan this is meant
+to prevent.
+
+## Knowing where a tunnel actually goes
+
+**The country and exit IP are measured through the tunnel, not looked up.** For
+a proxy the address that matters is the one the far side *presents*, and it is
+not always the box you ssh into — a provider can route egress elsewhere, and a
+jump-hosted tunnel comes out somewhere else entirely. So the probe asks
+Cloudflare's `/cdn-cgi/trace` **through** the tunnel: no API key, no account,
+and because the request leaves from the VPS rather than from home, the lookup
+itself reveals nothing new about you. When the exit and the server addresses
+differ, the row says so.
+
+That single request answers three questions at once, so it also gives the
+**latency** column — a full round trip through the tunnel, including the far
+side's own latency, not just the hop to the server. The row shows the last
+probe and the average of the last few on hover; one slow probe on a busy link
+is noise, a raised average is the tunnel being slow.
+
+The **server's own address** sits beside its hostname, from a plain local DNS
+lookup, so you never have to resolve it yourself.
+
+**Availability** is the share of observed time a tunnel has been up, alongside
+its restart and consecutive-failure counts. It is counted only while TunMan is
+running and resets when TunMan does — it measures the tunnel, not the month.
+
+A country can be overridden per tunnel, for one that cannot be probed or whose
+provider geolocates somewhere misleading.
+
+## Bandwidth caps
+
+Hourly, weekly and monthly limits in MiB, to keep a box off its provider's bad
+side. The windows are deliberately not the same shape:
+
+| Window | Shape | Why |
+|---|---|---|
+| Hourly | Rolling 60 minutes | A clock hour resets at :00, which would let a burst spend the cap twice either side of the boundary |
+| Weekly | Rolling 7 days | Same reasoning |
+| Monthly | **Calendar** month | That is how transfer quotas are actually billed |
+
+Usage is kept in hour-sized buckets on disk, because a cap that forgets
+everything on restart cannot protect a box from being billed.
+
+At the cap, the default is to **refuse new connections**: transfers already
+running finish, the tunnel stays up, and it recovers on its own when the window
+rolls over. *Stop the tunnel* and *warn only* are the alternatives; a
+cap-stopped tunnel restarts itself once the window moves.
+
+**Caps only work on metered tunnels.** Windows exposes no per-socket byte
+counts, so without metering there is nothing to measure against. Rather than
+showing a limit that quietly does nothing, TunMan refuses to save it and the
+row shows a warning.
 
 ## Seeing what uses a tunnel
 
@@ -107,6 +163,46 @@ If something floods the log, right-click a line → *Mute lines like this*. Mute
 patterns are dropped before they are ever stored, so a runaway source stops
 evicting everything else. Mutes last for the session only.
 
+## Mounts
+
+`rclone mount` and `sshfs`, kept up the same way tunnels are — but with a
+different definition of working. **A live mount process proves nothing:** a
+mount can go stale while its process stays perfectly happy. So a mount only
+counts as up once its path can actually be listed, and it is re-checked every
+few seconds while it runs; when the path stops answering, the mount is torn
+down and remade.
+
+The **retry delay is per mount and configurable**, which is the point of it
+existing. Some servers treat an instant reconnect as an attack and ban rather
+than reconnect, so a fixed delay beats an eager backoff. Zero uses the same
+doubling backoff tunnels use (5 s to a 5-minute ceiling), and *give up after* N
+failures stops a permanently broken mount retrying forever.
+
+rclone mounts pick from the remotes already in your rclone config, so there is
+nothing to retype. **rclone's `sftp` backend does the same job as sshfs**, which
+matters on Windows: sshfs needs sshfs-win, a separate install, while an sftp
+remote needs nothing you do not already have. Both need WinFsp, and TunMan says
+plainly when it is missing rather than letting the error be mysterious.
+
+## Sync
+
+rclone jobs, on a schedule or on demand — the DIY cloud half.
+
+**`sync` deletes.** It makes the destination match the source, which means
+removing anything at the destination that is not at the source. Point it at the
+wrong path once and it is not a failed transfer, it is data gone. So:
+
+- new jobs default to **copy**, which only ever adds;
+- destructive modes are labelled as such, in the picker and on the row;
+- every job has a **dry run** that reports what it would do and does none of it,
+  with the output in a panel underneath;
+- a **backup dir** moves anything that would be deleted or replaced aside
+  instead of destroying it — the single most useful safety net there is.
+
+Progress comes live from rclone while a run is in flight. *Skip files newer
+than* avoids copying something still being written, and a per-job bandwidth
+ceiling keeps a sync from swallowing the line.
+
 ## Config
 
 One TOML file at `%APPDATA%\TunMan\TunMan.toml`, meant to be hand-editable:
@@ -114,6 +210,7 @@ One TOML file at `%APPDATA%\TunMan\TunMan.toml`, meant to be hand-editable:
 ```toml
 [settings]
 ssh_path = "ssh"
+rclone_path = "rclone"
 autostart_tunnels = true
 
 [[tunnel]]
@@ -124,7 +221,28 @@ host = "fi.example.org"
 port = 1080
 meter = true
 auto_start = true
+
+[tunnel.caps]
+monthly_mib = 500000
+action = "block_new"
+
+[[mount]]
+name = "backups"
+kind = "rclone"
+remote = "nas:backups"
+target = "R:"
+retry_delay_secs = 120
+
+[[job]]
+name = "photos"
+mode = "copy"
+source = "D:/photos"
+dest = "offsite:photos"
+interval_mins = 60
 ```
+
+Bandwidth usage lives beside it in `usage.json`, which is machine-written and
+not worth hand-editing.
 
 Every field has a default, so a minimal block like the above loads fine. Saves
 are atomic — a temp file then a rename — and **a file TunMan could not parse is
@@ -170,5 +288,8 @@ cargo fmt
 ```
 
 Requires an `ssh` binary; Windows ships one at
-`C:\Windows\System32\OpenSSH\ssh.exe`. `cargo fmt` is safe to run here — this
+`C:\Windows\System32\OpenSSH\ssh.exe`. Mounts and sync jobs need
+[rclone](https://rclone.org/), and mounting needs
+[WinFsp](https://winfsp.dev/). sshfs mounts additionally need sshfs-win — or
+use an rclone remote on the `sftp` backend, which does the same job. `cargo fmt` is safe to run here — this
 repo has had a `rustfmt.toml` since its first commit.

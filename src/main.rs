@@ -10,15 +10,18 @@
 mod app_paths;
 mod config;
 mod geo;
+mod jobs;
 mod log_capture;
 mod logfmt;
 mod meter;
 mod model;
+mod mounts;
 mod platform;
 mod sa_push;
 mod sampler;
 mod ssh;
 mod supervisor;
+mod sync;
 mod traffic;
 mod ui;
 mod usage;
@@ -91,7 +94,11 @@ fn main() -> Result<()> {
         cfg.settings.start_hidden || std::env::args().any(|a| a == "--hidden" || a == "-Embedding");
 
     let shared = Arc::new(supervisor::Shared::default());
+    let mount_shared = Arc::new(jobs::MountShared::default());
+    let sync_shared = Arc::new(jobs::SyncShared::default());
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<supervisor::Command>(64);
+    let (mount_tx, mount_rx) = tokio::sync::mpsc::channel::<jobs::MountCommand>(64);
+    let (sync_tx, sync_rx) = tokio::sync::mpsc::channel::<jobs::SyncCommand>(64);
 
     // The tokio runtime lives on its own thread; eframe owns the main one.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -100,13 +107,23 @@ fn main() -> Result<()> {
         let cfg = cfg.clone();
         rt.spawn(async move { supervisor::run(cfg, shared, cmd_rx).await });
     }
+    {
+        let shared = mount_shared.clone();
+        let cfg = cfg.clone();
+        rt.spawn(async move { jobs::run_mounts(cfg, shared, mount_rx).await });
+    }
+    {
+        let shared = sync_shared.clone();
+        let cfg = cfg.clone();
+        rt.spawn(async move { jobs::run_sync(cfg, shared, sync_rx).await });
+    }
     sampler::start(shared.clone(), cmd_tx.clone());
 
     let opts = eframe::NativeOptions {
         persistence_path: Some(app_paths::data_dir().join("window.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("TunMan v{} ({})", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")))
-            .with_inner_size([1040.0, 620.0])
+            .with_inner_size([1280.0, 680.0])
             .with_min_inner_size([720.0, 420.0])
             // Always invisible at creation. The window is revealed a few frames
             // in, once there is something painted behind it — otherwise the
@@ -134,8 +151,12 @@ fn main() -> Result<()> {
                 .ok();
             Ok(Box::new(ui::TunManApp::new(
                 shared,
+                mount_shared,
+                sync_shared,
                 cfg,
                 cmd_tx,
+                mount_tx,
+                sync_tx,
                 tray,
                 ui_rx,
                 start_hidden,

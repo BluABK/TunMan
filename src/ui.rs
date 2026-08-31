@@ -2,6 +2,8 @@
 
 pub mod dialogs;
 pub mod log_view;
+pub mod mounts;
+pub mod sync;
 pub mod traffic;
 pub mod tunnels;
 
@@ -15,6 +17,7 @@ use tracing::{info, warn};
 use tray_icon::TrayIcon;
 
 use crate::config::Config;
+use crate::jobs::{JobState, MountCommand, MountShared, MountState, SyncCommand, SyncShared};
 use crate::supervisor::{Command, Shared, Status, TunnelState};
 
 /// Out-of-band requests reaching the UI from the tray thread or a second
@@ -29,14 +32,20 @@ pub enum UiCommand {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Tunnels,
+    Mounts,
+    Sync,
     Traffic,
     Log,
 }
 
 pub struct TunManApp {
     pub shared: Arc<Shared>,
+    pub mount_shared: Arc<MountShared>,
+    pub sync_shared: Arc<SyncShared>,
     pub cfg: Config,
     pub cmd_tx: Sender<Command>,
+    pub mount_tx: Sender<MountCommand>,
+    pub sync_tx: Sender<SyncCommand>,
     /// Dropping this removes the icon from the tray, so it has to be kept for
     /// the life of the app even though nothing reads it.
     _tray: TrayIcon,
@@ -56,10 +65,20 @@ pub struct TunManApp {
     pub selected: Option<String>,
     /// Cached snapshot, refreshed about once a second rather than per frame.
     pub rows: Vec<TunnelState>,
+    pub mount_rows: Vec<MountState>,
+    pub job_rows: Vec<JobState>,
     refreshed: Option<Instant>,
     pub history: Vec<crate::sampler::Sample>,
 
+    /// Remotes rclone already knows about, read once at startup and on demand.
+    pub rclone_remotes: Vec<String>,
+    pub selected_job: Option<String>,
+
     pub editor: Option<dialogs::EditState>,
+    pub mount_editor: Option<dialogs::MountEdit>,
+    pub job_editor: Option<dialogs::JobEdit>,
+    /// Set by "Save & dry run", consumed once the job has been written.
+    pub pending_dry_run: Option<String>,
     pub settings_open: bool,
     pub log: log_view::LogViewState,
     /// Transient message shown in the action row (copied, exported, saved).
@@ -70,19 +89,29 @@ pub struct TunManApp {
 }
 
 impl TunManApp {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         shared: Arc<Shared>,
+        mount_shared: Arc<MountShared>,
+        sync_shared: Arc<SyncShared>,
         cfg: Config,
         cmd_tx: Sender<Command>,
+        mount_tx: Sender<MountCommand>,
+        sync_tx: Sender<SyncCommand>,
         tray: TrayIcon,
         ui_rx: Receiver<UiCommand>,
         start_hidden: bool,
         load_error: Option<String>,
     ) -> TunManApp {
+        let rclone_remotes = crate::mounts::list_remotes(&cfg.settings.rclone_path);
         TunManApp {
             shared,
+            mount_shared,
+            sync_shared,
             cfg,
             cmd_tx,
+            mount_tx,
+            sync_tx,
             _tray: tray,
             ui_rx,
             tab: Tab::Tunnels,
@@ -92,9 +121,16 @@ impl TunManApp {
             start_hidden,
             selected: None,
             rows: Vec::new(),
+            mount_rows: Vec::new(),
+            job_rows: Vec::new(),
             refreshed: None,
             history: Vec::new(),
+            rclone_remotes,
+            selected_job: None,
             editor: None,
+            mount_editor: None,
+            job_editor: None,
+            pending_dry_run: None,
             settings_open: false,
             log: log_view::LogViewState::default(),
             toast: None,
@@ -111,6 +147,18 @@ impl TunManApp {
         }
     }
 
+    pub fn send_mount(&self, cmd: MountCommand) {
+        if self.mount_tx.try_send(cmd).is_err() {
+            warn!("the mount supervisor is busy; command dropped");
+        }
+    }
+
+    pub fn send_sync(&self, cmd: SyncCommand) {
+        if self.sync_tx.try_send(cmd).is_err() {
+            warn!("the sync supervisor is busy; command dropped");
+        }
+    }
+
     pub fn note(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
     }
@@ -124,6 +172,8 @@ impl TunManApp {
         match self.cfg.save(&crate::app_paths::config_path()) {
             Ok(()) => {
                 self.send(Command::Reload(Box::new(self.cfg.clone())));
+                self.send_mount(MountCommand::Reload(Box::new(self.cfg.clone())));
+                self.send_sync(SyncCommand::Reload(Box::new(self.cfg.clone())));
                 self.note("Saved");
             }
             Err(e) => {
@@ -140,6 +190,8 @@ impl TunManApp {
         // table cannot be copied unless refreshes pause while text is held.
         if stale && !text_selection_hold(ctx) {
             self.rows = self.shared.snapshot(&self.cfg.tunnels);
+            self.mount_rows = self.mount_shared.snapshot(&self.cfg.mounts);
+            self.job_rows = self.sync_shared.snapshot(&self.cfg.jobs);
             self.history = crate::sampler::history();
             self.refreshed = Some(Instant::now());
         }
@@ -159,8 +211,10 @@ impl TunManApp {
             return;
         }
         self.quitting = true;
-        info!("shutting down; stopping tunnels");
+        info!("shutting down; stopping tunnels, mounts and jobs");
         self.send(Command::Shutdown);
+        self.send_mount(MountCommand::Shutdown);
+        self.send_sync(SyncCommand::Shutdown);
         // Give the supervisor a moment to kill its children. The processes are
         // spawned kill_on_drop, so worst case they die with us anyway.
         std::thread::sleep(Duration::from_millis(250));
@@ -270,6 +324,11 @@ impl eframe::App for TunManApp {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Tunnels, "Tunnels")
                     .on_hover_text("Every tunnel, its state, and what is connected to it.");
+                ui.selectable_value(&mut self.tab, Tab::Mounts, "Mounts").on_hover_text(
+                    "sshfs and rclone mounts, kept up and remounted when they drop.",
+                );
+                ui.selectable_value(&mut self.tab, Tab::Sync, "Sync")
+                    .on_hover_text("rclone jobs, on a schedule or on demand — the DIY cloud half.");
                 ui.selectable_value(&mut self.tab, Tab::Traffic, "Traffic").on_hover_text(
                     "Throughput over the last 30 minutes, and every process and \
                          destination across all tunnels.",
@@ -314,12 +373,16 @@ impl eframe::App for TunManApp {
 
             match self.tab {
                 Tab::Tunnels => tunnels::show(self, ui),
+                Tab::Mounts => mounts::show(self, ui),
+                Tab::Sync => sync::show(self, ui),
                 Tab::Traffic => traffic::show(self, ui),
                 Tab::Log => log_view::show(self, ui),
             }
         });
 
         dialogs::show_editor(self, ui.ctx());
+        dialogs::show_mount_editor(self, ui.ctx());
+        dialogs::show_job_editor(self, ui.ctx());
         dialogs::show_settings(self, ui.ctx());
     }
 

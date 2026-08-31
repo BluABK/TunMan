@@ -118,7 +118,51 @@ mod imp {
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    /// A job object that kills everything in it when the last handle closes —
+    /// which happens when this process dies, however it dies.
+    ///
+    /// `kill_on_drop` only runs if the runtime is dropped in an orderly way. A
+    /// `taskkill /F`, a panic-abort or a crash skips every destructor, and the
+    /// children survive: measured 2026-08-31, killing TunMan outright left an
+    /// `rclone mount` running with its drive letter still claimed, which is
+    /// exactly the orphan the whole design is meant to prevent. The job object
+    /// is enforced by the kernel and needs no cooperation from us.
+    static KILL_JOB: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
+    fn kill_job() -> Option<HANDLE> {
+        let raw = KILL_JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(None, None).ok()?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+            .ok()?;
+            Some(job.0 as usize)
+        });
+        raw.map(|h| HANDLE(h as *mut std::ffi::c_void))
+    }
+
+    /// Put a child in the kill-on-exit job.
+    ///
+    /// Best effort: a child that cannot be assigned still works, it just loses
+    /// the guarantee that it dies with us.
+    pub fn adopt_child(handle: isize) {
+        let Some(job) = kill_job() else { return };
+        unsafe {
+            let _ = AssignProcessToJobObject(job, HANDLE(handle as *mut std::ffi::c_void));
+        }
+    }
 
     pub fn process_tree_snapshot() -> Vec<SnapProc> {
         let mut out = Vec::new();
@@ -245,6 +289,8 @@ mod imp {
 mod imp {
     use super::SnapProc;
 
+    pub fn adopt_child(_handle: isize) {}
+
     pub fn process_tree_snapshot() -> Vec<SnapProc> {
         Vec::new()
     }
@@ -266,7 +312,7 @@ mod imp {
     }
 }
 
-pub use imp::{kill_process_tree, process_tree_snapshot, tcp_table};
+pub use imp::{adopt_child, kill_process_tree, process_tree_snapshot, tcp_table};
 
 /// `MIB_TCP_STATE_ESTAB` — the only state that means traffic can flow.
 pub const TCP_ESTABLISHED: u32 = 5;

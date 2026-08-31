@@ -198,7 +198,7 @@ fn sampler_loop(shared: Arc<Shared>, commands: tokio::sync::mpsc::Sender<Command
             }
         }
 
-        if ticks % SAVE_EVERY_TICKS == 0 {
+        if ticks.is_multiple_of(SAVE_EVERY_TICKS) {
             let mut led = ledger().lock();
             led.prune(now);
             let _ = led.save(&crate::app_paths::usage_path());

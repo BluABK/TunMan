@@ -13,6 +13,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::model::Tunnel;
+use crate::mounts::Mount;
+use crate::sync::SyncJob;
 
 /// App-wide settings. Every field has a default, so an older config file with
 /// none of them still loads.
@@ -38,6 +40,14 @@ pub struct Settings {
     pub probe_target: String,
     pub probe_interval_secs: u64,
 
+    /// The rclone binary, for mounts and sync jobs. Left as `rclone` it
+    /// resolves on PATH.
+    pub rclone_path: String,
+    /// The sshfs binary. On Windows this comes from sshfs-win, which is a
+    /// separate install; an rclone remote on the sftp backend does the same
+    /// job without it.
+    pub sshfs_path: String,
+
     pub log_retention_days: u64,
 
     /// Optional convenience only. TunMan is standalone; this exists so a
@@ -59,6 +69,8 @@ impl Default for Settings {
             probe_enabled: false,
             probe_target: "example.com:443".to_string(),
             probe_interval_secs: 300,
+            rclone_path: "rclone".to_string(),
+            sshfs_path: "sshfs".to_string(),
             log_retention_days: 7,
             sa_integration_enabled: false,
             sa_db_path: String::new(),
@@ -73,6 +85,12 @@ pub struct Config {
     /// `[[tunnel]]` blocks, in the order they are shown.
     #[serde(rename = "tunnel")]
     pub tunnels: Vec<Tunnel>,
+    /// `[[mount]]` blocks.
+    #[serde(rename = "mount")]
+    pub mounts: Vec<Mount>,
+    /// `[[job]]` blocks — rclone sync jobs.
+    #[serde(rename = "job")]
+    pub jobs: Vec<SyncJob>,
 }
 
 impl Config {
@@ -119,6 +137,26 @@ impl Config {
             .unwrap_or_default()
     }
 
+    /// A name not already used by a mount.
+    pub fn unique_mount_name(&self, base: &str) -> String {
+        let base = if base.trim().is_empty() { "mount" } else { base.trim() };
+        let taken = |n: &str| self.mounts.iter().any(|m| m.name == n);
+        if !taken(base) {
+            return base.to_string();
+        }
+        (2..).map(|n| format!("{base}-{n}")).find(|c| !taken(c)).unwrap_or_default()
+    }
+
+    /// A name not already used by a sync job.
+    pub fn unique_job_name(&self, base: &str) -> String {
+        let base = if base.trim().is_empty() { "job" } else { base.trim() };
+        let taken = |n: &str| self.jobs.iter().any(|j| j.name == n);
+        if !taken(base) {
+            return base.to_string();
+        }
+        (2..).map(|n| format!("{base}-{n}")).find(|c| !taken(c)).unwrap_or_default()
+    }
+
     /// A local port nothing in this config is already using, starting at
     /// `from`. Only catches TunMan's own collisions — a port held by another
     /// program still fails at bind time, which ssh reports through
@@ -158,6 +196,8 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            mounts: Vec::new(),
+            jobs: Vec::new(),
         }
     }
 
@@ -186,6 +226,61 @@ mod tests {
         assert_eq!(c.tunnels[0].ssh_port, 22);
         assert_eq!(c.tunnels[0].bind, "127.0.0.1");
         assert_eq!(c.settings.ssh_path, "ssh");
+    }
+
+    /// Mounts and jobs live in the same file as tunnels and must survive the
+    /// same round trip — a config that loses half of itself on save is worse
+    /// than one that refuses to save at all.
+    #[test]
+    fn mounts_and_jobs_round_trip_with_the_tunnels() {
+        let c = Config {
+            settings: Settings::default(),
+            tunnels: sample().tunnels,
+            mounts: vec![crate::mounts::Mount {
+                name: "backups".into(),
+                remote: "nas:backups".into(),
+                target: "X:".into(),
+                retry_delay_secs: 120,
+                ..Default::default()
+            }],
+            jobs: vec![crate::sync::SyncJob {
+                name: "photos".into(),
+                source: "local:D:/photos".into(),
+                dest: "offsite:photos".into(),
+                interval_mins: 60,
+                ..Default::default()
+            }],
+        };
+        let text = toml::to_string_pretty(&c).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(c, back);
+        assert!(text.contains("[[mount]]"), "serialised under the expected key");
+        assert!(text.contains("[[job]]"));
+    }
+
+    /// A config written before mounts existed must still load.
+    #[test]
+    fn a_config_without_mounts_or_jobs_still_loads() {
+        let text = r#"
+            [[tunnel]]
+            name = "vps"
+            host = "example.org"
+        "#;
+        let c: Config = toml::from_str(text).unwrap();
+        assert!(c.mounts.is_empty());
+        assert!(c.jobs.is_empty());
+        assert_eq!(c.settings.rclone_path, "rclone");
+    }
+
+    #[test]
+    fn unique_names_are_found_per_kind() {
+        let mut c = Config::default();
+        c.mounts.push(crate::mounts::Mount { name: "mount".into(), ..Default::default() });
+        c.jobs.push(crate::sync::SyncJob { name: "job".into(), ..Default::default() });
+        assert_eq!(c.unique_mount_name("mount"), "mount-2");
+        assert_eq!(c.unique_job_name("job"), "job-2");
+        // The namespaces are separate: a mount named "job" does not block one.
+        assert_eq!(c.unique_mount_name("job"), "job");
     }
 
     #[test]
