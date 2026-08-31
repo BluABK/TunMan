@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use egui_extras::{Column, TableBuilder};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 
-use crate::ui::TunmanApp;
+use crate::ui::TunManApp;
 use crate::util::{fmt_bytes, fmt_rate};
 
 const ROW_H: f32 = 22.0;
 
-pub fn show(app: &mut TunmanApp, ui: &mut egui::Ui) {
+pub fn show(app: &mut TunManApp, ui: &mut egui::Ui) {
     let metered: Vec<String> =
         app.rows.iter().filter(|r| r.metering).map(|r| r.name.clone()).collect();
 
@@ -20,7 +20,7 @@ pub fn show(app: &mut TunmanApp, ui: &mut egui::Ui) {
         if metered.is_empty() {
             ui.colored_label(ui.visuals().warn_fg_color, "No metered tunnels").on_hover_text(
                 "Byte counts need metering. Edit a SOCKS or local tunnel and tick \"Meter \
-                 traffic\" — tunman then owns the port and counts what passes through it. \
+                 traffic\" — TunMan then owns the port and counts what passes through it. \
                  Windows has no per-socket byte counter to read instead.",
             );
         } else {
@@ -38,7 +38,7 @@ pub fn show(app: &mut TunmanApp, ui: &mut egui::Ui) {
     combined_table(app, ui);
 }
 
-fn graph(app: &TunmanApp, metered: &[String], ui: &mut egui::Ui) {
+fn graph(app: &TunManApp, metered: &[String], ui: &mut egui::Ui) {
     if app.history.is_empty() || metered.is_empty() {
         ui.add_space(8.0);
         ui.weak("Nothing to plot yet.");
@@ -93,7 +93,7 @@ fn graph(app: &TunmanApp, metered: &[String], ui: &mut egui::Ui) {
 }
 
 /// Every client across every tunnel, folded together.
-fn combined_table(app: &mut TunmanApp, ui: &mut egui::Ui) {
+fn combined_table(app: &mut TunManApp, ui: &mut egui::Ui) {
     // (pid, process, dest, tunnel) → totals. Tunnel is part of the key: the
     // same process on two tunnels is two facts, not one.
     #[derive(Default)]

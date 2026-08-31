@@ -1,6 +1,6 @@
 //! The metering front door.
 //!
-//! With metering on, ssh binds a private loopback port and tunman listens on
+//! With metering on, ssh binds a private loopback port and TunMan listens on
 //! the one clients were told about. Every connection is accepted here, dialled
 //! through to ssh, and copied in both directions by tasks that count bytes as
 //! they go. Clients see no difference: same address, same protocol, one extra

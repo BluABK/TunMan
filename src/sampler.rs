@@ -96,7 +96,7 @@ fn sampler_loop(shared: Arc<Shared>) {
         let mut rates = HashMap::new();
 
         for st in states {
-            // tunman holds both ends of the loopback pair when metering, and
+            // TunMan holds both ends of the loopback pair when metering, and
             // ssh holds the far end always; neither is a "user" of the tunnel.
             let mut exclude = vec![self_pid];
             if let Some(pid) = st.pid {

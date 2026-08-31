@@ -16,7 +16,7 @@ const SINGLE_INSTANCE_PORT: u16 = 47921;
 /// and releases the lock.
 pub struct InstanceGuard;
 
-/// Take the single-instance lock, or `None` if another tunman already holds it.
+/// Take the single-instance lock, or `None` if another TunMan already holds it.
 ///
 /// On success the listener moves into a background thread that treats every
 /// incoming connection as "someone tried to launch me again, show the window".
@@ -24,8 +24,8 @@ pub struct InstanceGuard;
 ///
 /// **Never `try_clone` this listener.** On Windows the clone is created
 /// inheritable, so it leaks into every child process spawned afterwards — and
-/// since tunman spawns long-lived `ssh.exe` children, a leaked handle would
-/// keep the port bound after tunman exits and the next launch would mistake its
+/// since TunMan spawns long-lived `ssh.exe` children, a leaked handle would
+/// keep the port bound after TunMan exits and the next launch would mistake its
 /// own dead socket for a running instance. (StreamArchiver shipped exactly that
 /// bug and had to move ports to escape the leaked handles.)
 pub fn acquire_single_instance(
@@ -49,7 +49,7 @@ pub fn notify_running_instance() {
     let _ = std::net::TcpStream::connect(("127.0.0.1", SINGLE_INSTANCE_PORT));
 }
 
-/// tunman's icon: a dark tunnel portal on cyan.
+/// TunMan's icon: a dark tunnel portal on cyan.
 ///
 /// Procedural, so there is no asset to ship or lose. The shape and palette are
 /// chosen to be unmistakable next to StreamArchiver's purple tile with a red

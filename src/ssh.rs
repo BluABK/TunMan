@@ -3,14 +3,14 @@
 //! [`args`] is pure so the flags can be asserted in tests rather than
 //! discovered by watching a tunnel fail to come up. It is also the only place
 //! that knows the difference between the port a tunnel *advertises* and the
-//! port ssh actually binds — when metering is on those differ, and tunman owns
+//! port ssh actually binds — when metering is on those differ, and TunMan owns
 //! the advertised one.
 
 use crate::model::{AuthMode, Tunnel, TunnelKind};
 
-/// Where ssh should listen, given whether tunman is fronting the tunnel.
+/// Where ssh should listen, given whether TunMan is fronting the tunnel.
 ///
-/// With metering on, ssh binds a private loopback port and tunman takes the
+/// With metering on, ssh binds a private loopback port and TunMan takes the
 /// advertised one, so clients keep the address they were given and gain byte
 /// counting without knowing anything changed.
 pub struct Bind {
@@ -157,7 +157,7 @@ mod tests {
     }
 
     /// Metering moves ssh onto a private port while the client keeps the
-    /// address it was given. If this ever binds the advertised port, tunman and
+    /// address it was given. If this ever binds the advertised port, TunMan and
     /// ssh race for it and one of them loses.
     #[test]
     fn metering_puts_ssh_on_the_private_port_not_the_advertised_one() {

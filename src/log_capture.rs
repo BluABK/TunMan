@@ -1,4 +1,4 @@
-//! In-memory ring buffer of tunman's own tracing events, feeding the Log tab —
+//! In-memory ring buffer of TunMan's own tracing events, feeding the Log tab —
 //! a live, filterable equivalent of the file log that needs no tailing.
 //!
 //! [`LogCaptureLayer`] is a third `tracing_subscriber::Layer` alongside the

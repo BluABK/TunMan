@@ -1,4 +1,4 @@
-# tunman
+# TunMan
 
 An SSH tunnel manager for Windows. Keeps a handful of `ssh` forwards up, shows
 which processes are using each one and how much is going through it, and lives
@@ -9,7 +9,7 @@ It is **standalone**. It was written to feed StreamArchiver's proxy pool with
 hand-off is one optional button, off by default.
 
 ```
-tunman v0.1.0
+TunMan v0.1.0
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Tunnels │ Traffic │ Log                                              ⚙   │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -58,8 +58,8 @@ second and interferes with nothing. It cannot tell you how many bytes moved:
 that is simply not in the table.
 
 **Opt-in — how much, and where to.** Tick *Meter traffic* on a tunnel and ssh
-binds a private port while tunman takes the advertised one. Every connection is
-then accepted by tunman, passed through to ssh, and copied by tasks that count
+binds a private port while TunMan takes the advertised one. Every connection is
+then accepted by TunMan, passed through to ssh, and copied by tasks that count
 bytes as they go. For a SOCKS tunnel the copier also reads the client's opening
 bytes as they pass, which is how the destination host appears in the table:
 
@@ -77,8 +77,8 @@ server, so there is nothing here to sit in front of. The checkbox is disabled
 for those rather than silently doing nothing.
 
 The cost of metering is one loopback hop, and that all traffic for that tunnel
-passes through tunman — so a tunman crash drops live connections on metered
-tunnels. Unmetered tunnels are unaffected by anything tunman does after starting
+passes through TunMan — so a TunMan crash drops live connections on metered
+tunnels. Unmetered tunnels are unaffected by anything TunMan does after starting
 them.
 
 ## Logging
@@ -93,7 +93,7 @@ WARN  tunnel exited; retrying  tunnel=vps-fi ran_for=3 fails=1 wait=5
 
 The **Log** tab shows the same stream live, filterable by level, by tunnel, and
 by text or regex. It holds the most recent 50,000 lines in memory; the files in
-`%APPDATA%\tunman\logs` go back further and are pruned on a schedule you set.
+`%APPDATA%\TunMan\logs` go back further and are pruned on a schedule you set.
 
 Two details worth knowing:
 
@@ -109,7 +109,7 @@ evicting everything else. Mutes last for the session only.
 
 ## Config
 
-One TOML file at `%APPDATA%\tunman\tunman.toml`, meant to be hand-editable:
+One TOML file at `%APPDATA%\TunMan\TunMan.toml`, meant to be hand-editable:
 
 ```toml
 [settings]
@@ -127,7 +127,7 @@ auto_start = true
 ```
 
 Every field has a default, so a minimal block like the above loads fine. Saves
-are atomic — a temp file then a rename — and **a file tunman could not parse is
+are atomic — a temp file then a rename — and **a file TunMan could not parse is
 never overwritten**: a typo in a hand-edit surfaces as a banner and saving is
 refused until you fix it, rather than costing you the file.
 
@@ -142,8 +142,8 @@ key in your agent first, and on a host with a few of those you hit
 `MaxAuthTries` and get refused with a perfectly good key in hand.
 
 A password can be stored per tunnel for hosts you cannot key. It is passed to
-ssh through an askpass helper (tunman re-invoked with `--askpass`), which means
-it lives in that process's environment, and it is stored in `tunman.toml` as
+ssh through an askpass helper (TunMan re-invoked with `--askpass`), which means
+it lives in that process's environment, and it is stored in `TunMan.toml` as
 plain text. It is masked in the log and in the copied command line, but a key is
 safer wherever you can use one.
 

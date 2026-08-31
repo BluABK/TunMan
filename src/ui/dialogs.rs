@@ -2,7 +2,7 @@
 
 use crate::model::{AuthMode, Tunnel, TunnelKind};
 use crate::supervisor::Command;
-use crate::ui::TunmanApp;
+use crate::ui::TunManApp;
 
 /// A tunnel being edited. Held as a draft so Cancel really cancels — editing
 /// the live config in place would restart the tunnel on every keystroke.
@@ -22,7 +22,7 @@ impl EditState {
     }
 }
 
-pub fn show_editor(app: &mut TunmanApp, ctx: &egui::Context) {
+pub fn show_editor(app: &mut TunManApp, ctx: &egui::Context) {
     let Some(mut ed) = app.editor.take() else { return };
     let mut open = true;
     let mut save = false;
@@ -144,7 +144,7 @@ pub fn show_editor(app: &mut TunmanApp, ctx: &egui::Context) {
 
                 if ed.draft.auth == AuthMode::Password {
                     ui.label("Password").on_hover_text(
-                        "Stored in tunman.toml as plain text and passed to ssh through the \
+                        "Stored in TunMan.toml as plain text and passed to ssh through the \
                          environment. It is masked in the log and in the copied command, but \
                          a key is safer wherever you can use one.",
                     );
@@ -166,20 +166,20 @@ pub fn show_editor(app: &mut TunmanApp, ctx: &egui::Context) {
                     ui.checkbox(&mut ed.draft.enabled, "Enabled").on_hover_text(
                         "Unchecked, this tunnel is never started, even by Start all.",
                     );
-                    ui.checkbox(&mut ed.draft.auto_start, "Start with tunman")
-                        .on_hover_text("Bring this tunnel up when tunman launches.");
+                    ui.checkbox(&mut ed.draft.auto_start, "Start with TunMan")
+                        .on_hover_text("Bring this tunnel up when TunMan launches.");
 
                     let meterable = ed.draft.kind.meterable();
                     ui.add_enabled_ui(meterable, |ui| {
                         ui.checkbox(&mut ed.draft.meter, "Meter traffic").on_hover_text(
                             if meterable {
-                                "Count bytes and, for SOCKS, show each destination. tunman \
+                                "Count bytes and, for SOCKS, show each destination. TunMan \
                                  takes the port and hands connections on to ssh, which costs \
                                  one loopback hop. Without this you still see which processes \
                                  are connected, just not how much they moved."
                             } else {
                                 "A remote forward is dialled from the server, so there is no \
-                                 local socket for tunman to sit in front of."
+                                 local socket for TunMan to sit in front of."
                             },
                         );
                     });
@@ -226,9 +226,9 @@ pub fn show_editor(app: &mut TunmanApp, ctx: &egui::Context) {
             ui.label(egui::RichText::new(&cmd).monospace().weak()).on_hover_text(
                 if ed.draft.metering() {
                     "With metering on, ssh binds a private port chosen at start-up (shown as \
-                     0 here) and tunman listens on the port you set."
+                     0 here) and TunMan listens on the port you set."
                 } else {
-                    "Exactly what tunman will run."
+                    "Exactly what TunMan will run."
                 },
             );
 
@@ -255,7 +255,7 @@ pub fn show_editor(app: &mut TunmanApp, ctx: &egui::Context) {
                 if ui
                     .add_enabled(ok, egui::Button::new("Save"))
                     .on_hover_text(if ok {
-                        "Write to tunman.toml. A running tunnel restarts only if something \
+                        "Write to TunMan.toml. A running tunnel restarts only if something \
                          it depends on changed."
                     } else {
                         "Fix the problems above first."
@@ -292,7 +292,7 @@ pub fn show_editor(app: &mut TunmanApp, ctx: &egui::Context) {
     }
 }
 
-pub fn show_settings(app: &mut TunmanApp, ctx: &egui::Context) {
+pub fn show_settings(app: &mut TunManApp, ctx: &egui::Context) {
     if !app.settings_open {
         return;
     }
@@ -324,12 +324,12 @@ pub fn show_settings(app: &mut TunmanApp, ctx: &egui::Context) {
                 ui.label("Start-up");
                 ui.vertical(|ui| {
                     ui.checkbox(&mut cfg.start_with_windows, "Start with Windows").on_hover_text(
-                        "Adds tunman to the current user's startup entries, launched hidden.",
+                        "Adds TunMan to the current user's startup entries, launched hidden.",
                     );
                     ui.checkbox(&mut cfg.start_hidden, "Start minimised to tray")
                         .on_hover_text("Launch straight to the tray with no window.");
                     ui.checkbox(&mut cfg.autostart_tunnels, "Auto-start tunnels").on_hover_text(
-                        "Master switch for the per-tunnel \"Start with tunman\" setting. \
+                        "Master switch for the per-tunnel \"Start with TunMan\" setting. \
                              Off means nothing comes up on its own.",
                     );
                 });
@@ -375,7 +375,7 @@ pub fn show_settings(app: &mut TunmanApp, ctx: &egui::Context) {
                 ui.end_row();
 
                 ui.label("StreamArchiver").on_hover_text(
-                    "Entirely optional. tunman works standalone; this only adds a button \
+                    "Entirely optional. TunMan works standalone; this only adds a button \
                      that copies your proxy URLs into StreamArchiver's pool.",
                 );
                 ui.vertical(|ui| {
@@ -408,7 +408,7 @@ pub fn show_settings(app: &mut TunmanApp, ctx: &egui::Context) {
                 }
                 if ui
                     .button("📂 Open config folder")
-                    .on_hover_text("tunman.toml and the logs live here.")
+                    .on_hover_text("TunMan.toml and the logs live here.")
                     .clicked()
                 {
                     let dir = crate::app_paths::data_dir();
@@ -432,13 +432,13 @@ pub fn show_settings(app: &mut TunmanApp, ctx: &egui::Context) {
 }
 
 /// Register or remove the "start with Windows" entry.
-fn apply_autostart(app: &mut TunmanApp) {
+fn apply_autostart(app: &mut TunManApp) {
     let Ok(exe) = std::env::current_exe() else {
-        app.note("Could not find tunman's own path");
+        app.note("Could not find TunMan's own path");
         return;
     };
     let launcher = auto_launch::AutoLaunchBuilder::new()
-        .set_app_name("tunman")
+        .set_app_name("TunMan")
         .set_app_path(&exe.display().to_string())
         // Launched by the OS it should go straight to the tray rather than
         // throwing a window at you every time you log in.
@@ -451,9 +451,9 @@ fn apply_autostart(app: &mut TunmanApp) {
     };
     match result {
         Ok(()) => app.note(if app.cfg.settings.start_with_windows {
-            "tunman will start with Windows"
+            "TunMan will start with Windows"
         } else {
-            "tunman will no longer start with Windows"
+            "TunMan will no longer start with Windows"
         }),
         Err(e) => app.note(format!("Could not change the startup entry: {e}")),
     }

@@ -1,4 +1,4 @@
-//! `tunman.toml` — the whole of tunman's persistent state.
+//! `TunMan.toml` — the whole of TunMan's persistent state.
 //!
 //! Two rules shape this module. **A file we could not parse is never
 //! overwritten**: a typo in a hand-edit must not cost you the file, so a load
@@ -40,7 +40,7 @@ pub struct Settings {
 
     pub log_retention_days: u64,
 
-    /// Optional convenience only. tunman is standalone; this exists so a
+    /// Optional convenience only. TunMan is standalone; this exists so a
     /// working tunnel can be pushed into StreamArchiver's proxy pool without
     /// copy-paste, and it is off unless asked for.
     pub sa_integration_enabled: bool,
@@ -120,7 +120,7 @@ impl Config {
     }
 
     /// A local port nothing in this config is already using, starting at
-    /// `from`. Only catches tunman's own collisions — a port held by another
+    /// `from`. Only catches TunMan's own collisions — a port held by another
     /// program still fails at bind time, which ssh reports through
     /// `ExitOnForwardFailure`.
     pub fn free_port(&self, from: u16) -> u16 {
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_a_first_run_not_an_error() {
-        let path = std::env::temp_dir().join("tunman-does-not-exist-42.toml");
+        let path = std::env::temp_dir().join("TunMan-does-not-exist-42.toml");
         let _ = std::fs::remove_file(&path);
         assert_eq!(Config::load(&path).unwrap(), Config::default());
     }
@@ -200,7 +200,7 @@ mod tests {
     /// file untouched.
     #[test]
     fn a_broken_file_is_an_error_not_an_empty_config() {
-        let path = std::env::temp_dir().join("tunman-broken.toml");
+        let path = std::env::temp_dir().join("TunMan-broken.toml");
         std::fs::write(&path, "[[tunnel]\nname = ").unwrap();
         assert!(Config::load(&path).is_err());
         let _ = std::fs::remove_file(&path);
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn save_then_load_returns_what_was_saved() {
-        let path = std::env::temp_dir().join("tunman-roundtrip.toml");
+        let path = std::env::temp_dir().join("TunMan-roundtrip.toml");
         let c = sample();
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), c);

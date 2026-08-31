@@ -1,5 +1,5 @@
-//! Where tunman keeps its things: one config file and a log directory, both
-//! under `%APPDATA%\tunman`.
+//! Where TunMan keeps its things: one config file and a log directory, both
+//! under `%APPDATA%\TunMan`.
 //!
 //! Deliberately a *file* layout rather than a database. There are a handful of
 //! tunnels, they are edited by hand as often as through the UI, and a TOML file
@@ -7,22 +7,22 @@
 
 use std::path::{Path, PathBuf};
 
-/// `%APPDATA%\tunman` (`~/.local/share/tunman` elsewhere), falling back to a
+/// `%APPDATA%\TunMan` (`~/.local/share/TunMan` elsewhere), falling back to a
 /// directory beside the executable if the OS won't tell us.
 pub fn data_dir() -> PathBuf {
     // Not ProjectDirs::data_dir() on Windows: it appends a further "data"
     // component, burying the config one level deeper than anyone would look
     // for it. For a single hand-editable file that is a cost with no benefit.
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        return PathBuf::from(appdata).join("tunman");
+        return PathBuf::from(appdata).join("TunMan");
     }
-    directories::ProjectDirs::from("", "", "tunman")
+    directories::ProjectDirs::from("", "", "TunMan")
         .map(|d| d.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("tunman-data"))
+        .unwrap_or_else(|| PathBuf::from("TunMan-data"))
 }
 
 pub fn config_path() -> PathBuf {
-    data_dir().join("tunman.toml")
+    data_dir().join("TunMan.toml")
 }
 
 pub fn logs_dir() -> PathBuf {

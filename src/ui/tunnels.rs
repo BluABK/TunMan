@@ -3,13 +3,13 @@
 use egui_extras::{Column, TableBuilder};
 
 use crate::supervisor::{Command, Status};
-use crate::ui::{TunmanApp, status_color};
+use crate::ui::{TunManApp, status_color};
 use crate::util::{fmt_bytes, fmt_rate, fmt_uptime, now_unix};
 
 /// Row height. Fixed so the table can virtualise.
 const ROW_H: f32 = 22.0;
 
-pub fn show(app: &mut TunmanApp, ui: &mut egui::Ui) {
+pub fn show(app: &mut TunManApp, ui: &mut egui::Ui) {
     totals(app, ui);
     ui.add_space(2.0);
     actions(app, ui);
@@ -46,7 +46,7 @@ pub fn show(app: &mut TunmanApp, ui: &mut egui::Ui) {
     table(app, ui);
 }
 
-fn totals(app: &TunmanApp, ui: &mut egui::Ui) {
+fn totals(app: &TunManApp, ui: &mut egui::Ui) {
     let up = app.rows.iter().filter(|r| r.status == Status::Up).count();
     let down = app.rows.len().saturating_sub(up);
     let (mut rin, mut rout) = (0.0, 0.0);
@@ -81,7 +81,7 @@ fn totals(app: &TunmanApp, ui: &mut egui::Ui) {
     });
 }
 
-fn actions(app: &mut TunmanApp, ui: &mut egui::Ui) {
+fn actions(app: &mut TunManApp, ui: &mut egui::Ui) {
     ui.horizontal_wrapped(|ui| {
         if ui.button("➕ Add").on_hover_text("Define a new tunnel.").clicked() {
             add_tunnel(app);
@@ -136,7 +136,7 @@ fn actions(app: &mut TunmanApp, ui: &mut egui::Ui) {
         ui.separator();
         if ui
             .button("📂 Logs")
-            .on_hover_text("Open the folder holding tunman's log files.")
+            .on_hover_text("Open the folder holding TunMan's log files.")
             .clicked()
         {
             let dir = crate::app_paths::logs_dir();
@@ -146,19 +146,19 @@ fn actions(app: &mut TunmanApp, ui: &mut egui::Ui) {
     });
 }
 
-fn proxy_urls(app: &TunmanApp) -> Vec<String> {
+fn proxy_urls(app: &TunManApp) -> Vec<String> {
     app.cfg.tunnels.iter().filter_map(|t| t.proxy_url()).collect()
 }
 
-fn add_tunnel(app: &mut TunmanApp) {
+fn add_tunnel(app: &mut TunManApp) {
     let mut t = crate::model::Tunnel { name: app.cfg.unique_name("tunnel"), ..Default::default() };
     t.port = app.cfg.free_port(1080);
     app.editor = Some(crate::ui::dialogs::EditState::new(t, None));
 }
 
-fn export(app: &mut TunmanApp, urls: &[String]) {
+fn export(app: &mut TunManApp, urls: &[String]) {
     let Some(path) = rfd::FileDialog::new()
-        .set_file_name("tunman-proxies.txt")
+        .set_file_name("TunMan-proxies.txt")
         .add_filter("Text", &["txt"])
         .save_file()
     else {
@@ -170,13 +170,13 @@ fn export(app: &mut TunmanApp, urls: &[String]) {
     }
 }
 
-fn push_to_sa(app: &mut TunmanApp) {
+fn push_to_sa(app: &mut TunManApp) {
     let db = crate::sa_push::resolve_db_path(&app.cfg.settings.sa_db_path);
     let rows: Vec<(String, String)> = app
         .cfg
         .tunnels
         .iter()
-        .filter_map(|t| t.proxy_url().map(|u| (format!("tunman: {}", t.name), u)))
+        .filter_map(|t| t.proxy_url().map(|u| (format!("TunMan: {}", t.name), u)))
         .collect();
     match crate::sa_push::push(&db, &rows) {
         Ok(r) => app.note(r.summary()),
@@ -184,7 +184,7 @@ fn push_to_sa(app: &mut TunmanApp) {
     }
 }
 
-fn table(app: &mut TunmanApp, ui: &mut egui::Ui) {
+fn table(app: &mut TunManApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let mut action: Option<(String, RowAction)> = None;
     let selected = app.selected.clone();
@@ -271,7 +271,7 @@ fn table(app: &mut TunmanApp, ui: &mut egui::Ui) {
                         text = text.underline();
                     }
                     ui.label(text).on_hover_text(if r.metering {
-                        "Metered: tunman owns this port and counts every byte through it."
+                        "Metered: TunMan owns this port and counts every byte through it."
                     } else {
                         "Not metered: connections are visible, byte counts are not."
                     });
@@ -367,7 +367,7 @@ enum RowAction {
     Select,
 }
 
-fn apply(app: &mut TunmanApp, name: &str, what: RowAction, ctx: &egui::Context) {
+fn apply(app: &mut TunManApp, name: &str, what: RowAction, ctx: &egui::Context) {
     match what {
         RowAction::Start => app.send(Command::Start(name.to_string())),
         RowAction::Stop => app.send(Command::Stop(name.to_string())),
@@ -401,7 +401,7 @@ fn apply(app: &mut TunmanApp, name: &str, what: RowAction, ctx: &egui::Context) 
 }
 
 /// The per-tunnel detail: who is connected, and to what.
-fn detail(app: &mut TunmanApp, ui: &mut egui::Ui) {
+fn detail(app: &mut TunManApp, ui: &mut egui::Ui) {
     let Some(name) = app.selected.clone() else { return };
     let Some(state) = app.rows.iter().find(|r| r.name == name).cloned() else {
         app.selected = None;

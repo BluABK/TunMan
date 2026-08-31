@@ -48,7 +48,7 @@ impl TunnelKind {
         }
     }
 
-    /// Whether tunman can sit in front of this kind and count bytes.
+    /// Whether TunMan can sit in front of this kind and count bytes.
     ///
     /// A remote forward is dialled from the server, so the listening socket is
     /// on the far end and there is nothing here to front. The UI disables the
@@ -66,7 +66,7 @@ pub enum AuthMode {
     /// fails loudly instead of blocking forever on a prompt nobody can see.
     #[default]
     KeyOrAgent,
-    /// A stored password, fed to ssh through tunman's own askpass helper.
+    /// A stored password, fed to ssh through TunMan's own askpass helper.
     /// Convenient for a host you cannot key; the password is redacted
     /// everywhere it would otherwise be printed.
     Password,
@@ -81,7 +81,7 @@ impl AuthMode {
     }
 }
 
-/// A tunnel definition. Serialised verbatim into `tunman.toml`.
+/// A tunnel definition. Serialised verbatim into `TunMan.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Tunnel {
@@ -90,7 +90,7 @@ pub struct Tunnel {
     pub name: String,
     pub kind: TunnelKind,
     pub enabled: bool,
-    /// Start this tunnel when tunman starts.
+    /// Start this tunnel when TunMan starts.
     pub auto_start: bool,
 
     pub user: String,
@@ -125,7 +125,7 @@ pub struct Tunnel {
     /// `ServerAliveInterval`. Zero disables the keepalive entirely, which is
     /// how a tunnel silently dies behind a NAT that drops idle flows.
     pub keepalive_secs: u32,
-    /// Passed to ssh verbatim, after everything tunman generates.
+    /// Passed to ssh verbatim, after everything TunMan generates.
     pub extra_args: Vec<String>,
 }
 
@@ -219,7 +219,7 @@ impl Tunnel {
 
 /// Strip a password out of anything about to be displayed or logged.
 ///
-/// Belt and braces: tunman never deliberately formats a password, but ssh
+/// Belt and braces: TunMan never deliberately formats a password, but ssh
 /// command lines get logged verbatim on failure, and one careless format string
 /// is all it takes. Anything that reaches a log goes through here first.
 pub fn redact(text: &str, password: &str) -> String {
@@ -260,7 +260,7 @@ mod tests {
     }
 
     /// A remote forward's listener lives on the server, so there is no local
-    /// socket for tunman to sit in front of. Asking to meter one must resolve
+    /// socket for TunMan to sit in front of. Asking to meter one must resolve
     /// to "no", not to a listener that silently counts nothing.
     #[test]
     fn a_remote_forward_can_never_be_metered() {

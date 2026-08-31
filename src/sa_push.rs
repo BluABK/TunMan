@@ -1,12 +1,12 @@
 //! The optional StreamArchiver hand-off.
 //!
-//! tunman is standalone and this file is the only thing that knows another app
+//! TunMan is standalone and this file is the only thing that knows another app
 //! exists. It is off by default, never runs on a timer, and only ever moves in
 //! one direction: an explicit button press upserts the tunnels you choose into
 //! StreamArchiver's proxy pool.
 //!
 //! **It never deletes and never disables.** A proxy in that pool may have been
-//! added by hand or be in use by a running capture; tunman's job is to offer a
+//! added by hand or be in use by a running capture; TunMan's job is to offer a
 //! URL, not to curate someone else's table. Matching is by URL, which is the
 //! identity StreamArchiver itself uses.
 
@@ -124,7 +124,7 @@ mod tests {
     }
 
     fn tmp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("tunman-test-{name}.sqlite3"));
+        let p = std::env::temp_dir().join(format!("TunMan-test-{name}.sqlite3"));
         let _ = std::fs::remove_file(&p);
         p
     }
@@ -179,9 +179,9 @@ mod tests {
     }
 
     /// Untouched rows must survive: the pool may hold proxies that have nothing
-    /// to do with tunman.
+    /// to do with TunMan.
     #[test]
-    fn proxies_tunman_does_not_manage_are_left_alone() {
+    fn proxies_TunMan_does_not_manage_are_left_alone() {
         let path = tmp("others");
         let conn = sa_like_db(&path);
         conn.execute(

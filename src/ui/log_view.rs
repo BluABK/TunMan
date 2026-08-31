@@ -1,4 +1,4 @@
-//! The Log tab: everything tunman logged, including ssh's own output.
+//! The Log tab: everything TunMan logged, including ssh's own output.
 //!
 //! The rows are refreshed incrementally — the filter only re-scans the whole
 //! ring when it changes, and otherwise pulls just what arrived since the last
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::log_capture::{self, LogRecord, level_rank};
-use crate::ui::TunmanApp;
+use crate::ui::TunManApp;
 
 const ROW_H: f32 = 18.0;
 
@@ -162,7 +162,7 @@ fn level_color(ui: &egui::Ui, level: tracing::Level) -> egui::Color32 {
     }
 }
 
-pub fn show(app: &mut TunmanApp, ui: &mut egui::Ui) {
+pub fn show(app: &mut TunManApp, ui: &mut egui::Ui) {
     ui.ctx().request_repaint_after(Duration::from_millis(250));
     let hold = crate::ui::text_selection_hold(ui.ctx());
     let tunnels = log_capture::tunnels_seen();
@@ -351,7 +351,7 @@ mod tests {
             seq: 1,
             time_ms: 0,
             level,
-            target: "tunman::ssh",
+            target: "TunMan::ssh",
             message: msg.to_string(),
             tunnel: tunnel.map(|t| t.to_string()),
             fields: String::new(),
@@ -381,7 +381,7 @@ mod tests {
     fn search_is_case_insensitive_and_covers_the_target() {
         let r = rec(tracing::Level::INFO, "Connection Refused", None);
         assert!(record_matches(&r, None, None, "refused", false));
-        assert!(record_matches(&r, None, None, "tunman::ssh", false));
+        assert!(record_matches(&r, None, None, "TunMan::ssh", false));
         assert!(!record_matches(&r, None, None, "timeout", false));
     }
 

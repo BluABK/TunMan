@@ -33,7 +33,7 @@ pub enum Tab {
     Log,
 }
 
-pub struct TunmanApp {
+pub struct TunManApp {
     pub shared: Arc<Shared>,
     pub cfg: Config,
     pub cmd_tx: Sender<Command>,
@@ -69,7 +69,7 @@ pub struct TunmanApp {
     pub load_error: Option<String>,
 }
 
-impl TunmanApp {
+impl TunManApp {
     pub fn new(
         shared: Arc<Shared>,
         cfg: Config,
@@ -78,8 +78,8 @@ impl TunmanApp {
         ui_rx: Receiver<UiCommand>,
         start_hidden: bool,
         load_error: Option<String>,
-    ) -> TunmanApp {
-        TunmanApp {
+    ) -> TunManApp {
+        TunManApp {
             shared,
             cfg,
             cmd_tx,
@@ -228,7 +228,7 @@ fn selection_hold_decision(
     }
 }
 
-impl eframe::App for TunmanApp {
+impl eframe::App for TunManApp {
     /// Runs even while the window is hidden — which is exactly why the close
     /// interception and the tray pump live here rather than in `ui`. eframe
     /// skips `ui` entirely for a hidden viewport, so a tray click handled there
@@ -275,7 +275,7 @@ impl eframe::App for TunmanApp {
                          destination across all tunnels.",
                 );
                 ui.selectable_value(&mut self.tab, Tab::Log, "Log").on_hover_text(
-                    "tunman's log, including everything ssh itself printed — where the \
+                    "TunMan's log, including everything ssh itself printed — where the \
                      reason a tunnel dropped will be.",
                 );
 
@@ -299,11 +299,11 @@ impl eframe::App for TunmanApp {
                     ui.colored_label(ui.visuals().error_fg_color, "⚠");
                     ui.colored_label(
                         ui.visuals().error_fg_color,
-                        format!("{err} — fix it by hand; tunman will not overwrite it."),
+                        format!("{err} — fix it by hand; TunMan will not overwrite it."),
                     );
                     if ui
                         .button("📂 Open config")
-                        .on_hover_text("Open the folder holding tunman.toml.")
+                        .on_hover_text("Open the folder holding TunMan.toml.")
                         .clicked()
                     {
                         open_path(&crate::app_paths::data_dir());

@@ -1,4 +1,4 @@
-//! tunman — an SSH tunnel manager.
+//! TunMan — an SSH tunnel manager.
 //!
 //! Keeps a handful of `ssh` forwards up, shows what is connected to each one
 //! and how much is going through it, and lives in the tray.
@@ -48,7 +48,7 @@ fn main() -> Result<()> {
 
     let _tracing_guard = init_tracing();
     info!(
-        "tunman v{} ({}) build {}",
+        "TunMan v{} ({}) build {}",
         env!("CARGO_PKG_VERSION"),
         env!("GIT_HASH"),
         env!("BUILD_NUMBER")
@@ -64,7 +64,7 @@ fn main() -> Result<()> {
     }) {
         Some(g) => g,
         None => {
-            info!("another tunman is already running; showing its window");
+            info!("another TunMan is already running; showing its window");
             platform::notify_running_instance();
             return Ok(());
         }
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
     let opts = eframe::NativeOptions {
         persistence_path: Some(app_paths::data_dir().join("window.ron")),
         viewport: egui::ViewportBuilder::default()
-            .with_title(format!("tunman v{} ({})", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")))
+            .with_title(format!("TunMan v{} ({})", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")))
             .with_inner_size([1040.0, 620.0])
             .with_min_inner_size([720.0, 420.0])
             // Always invisible at creation. The window is revealed a few frames
@@ -115,7 +115,7 @@ fn main() -> Result<()> {
     };
 
     let result = eframe::run_native(
-        "tunman",
+        "TunMan",
         opts,
         Box::new(move |cc| {
             let (tray, tray_rx) = build_tray(cc.egui_ctx.clone())?;
@@ -130,7 +130,7 @@ fn main() -> Result<()> {
                     }
                 })
                 .ok();
-            Ok(Box::new(ui::TunmanApp::new(
+            Ok(Box::new(ui::TunManApp::new(
                 shared,
                 cfg,
                 cmd_tx,
@@ -160,7 +160,7 @@ fn icon_data() -> egui::IconData {
 /// tray click does nothing until something else happens to cause a frame.
 fn build_tray(ctx: egui::Context) -> Result<(TrayIcon, Receiver<UiCommand>)> {
     let menu = Menu::new();
-    let open = MenuItem::new("Open tunman", true, None);
+    let open = MenuItem::new("Open TunMan", true, None);
     let quit = MenuItem::new("Quit", true, None);
     menu.append(&open)?;
     menu.append(&PredefinedMenuItem::separator())?;
@@ -168,7 +168,7 @@ fn build_tray(ctx: egui::Context) -> Result<(TrayIcon, Receiver<UiCommand>)> {
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("tunman — SSH tunnels")
+        .with_tooltip("TunMan — SSH tunnels")
         .with_icon(platform::tray_icon_image()?)
         .build()?;
 
@@ -200,13 +200,13 @@ fn build_tray(ctx: egui::Context) -> Result<(TrayIcon, Receiver<UiCommand>)> {
 
 fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,tunman=debug"));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,TunMan=debug"));
 
     let log_dir = app_paths::logs_dir();
     app_paths::ensure_dir(&log_dir);
 
     let (non_blocking, guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::daily(&log_dir, "tunman.log"));
+        tracing_appender::non_blocking(tracing_appender::rolling::daily(&log_dir, "TunMan.log"));
 
     // `with_ansi_sanitization(false)` is required: tracing-subscriber otherwise
     // escapes the colour codes in message text and prints them as literal
@@ -234,7 +234,7 @@ fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
 /// Delete log files older than `keep_days`.
 ///
 /// The name check is `.contains(".log.")`, not an extension test: a daily-rolled
-/// file is `tunman.log.2026-08-31`, so `Path::extension()` returns the *date*
+/// file is `TunMan.log.2026-08-31`, so `Path::extension()` returns the *date*
 /// and an extension-only match never fires — which is how a log directory grows
 /// to gigabytes while looking like it has retention.
 fn prune_old_logs(dir: &std::path::Path, keep_days: u64) {
@@ -262,16 +262,16 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// The trap this exists to avoid: `tunman.log.2026-08-31` has an
+    /// The trap this exists to avoid: `TunMan.log.2026-08-31` has an
     /// *extension* of `2026-08-31`, so any extension-based check silently skips
     /// every rolled file and retention never happens.
     #[test]
     fn pruning_matches_rolled_names_and_spares_everything_else() {
-        let dir = std::env::temp_dir().join("tunman-prune-test");
+        let dir = std::env::temp_dir().join("TunMan-prune-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        for name in ["tunman.log", "tunman.log.2020-01-01", "tunman.toml", "notes.txt"] {
+        for name in ["TunMan.log", "TunMan.log.2020-01-01", "TunMan.toml", "notes.txt"] {
             let mut f = std::fs::File::create(dir.join(name)).unwrap();
             writeln!(f, "x").unwrap();
         }
@@ -282,7 +282,7 @@ mod tests {
         // Zero days is clamped to one, so this must not reach today's files —
         // and must never touch anything that is not a log.
         prune_old_logs(&dir, 0);
-        assert!(dir.join("tunman.toml").exists(), "pruning must never touch the config");
+        assert!(dir.join("TunMan.toml").exists(), "pruning must never touch the config");
         assert!(dir.join("notes.txt").exists());
 
         let _ = std::fs::remove_dir_all(&dir);

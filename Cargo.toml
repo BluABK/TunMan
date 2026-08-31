@@ -5,6 +5,12 @@ edition = "2024"
 description = "SSH tunnel manager with live per-process and per-destination traffic"
 build = "build.rs"
 
+# The package stays lowercase (idiomatic for a crate); the *binary* carries
+# the product name, so the artifact is TunMan.exe.
+[[bin]]
+name = "TunMan"
+path = "src/main.rs"
+
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts", "persistence"] }
 egui = "0.36.1"

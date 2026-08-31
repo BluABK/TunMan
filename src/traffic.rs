@@ -8,7 +8,7 @@
 //! many bytes moved: that is simply not in the table.
 //!
 //! **Opt-in metering** — for byte counts, something has to be *in* the stream.
-//! When a tunnel is metered, ssh binds a private port and tunman owns the
+//! When a tunnel is metered, ssh binds a private port and TunMan owns the
 //! advertised one, so every byte passes through a task that can count it (and,
 //! for SOCKS, read the destination out of the handshake on the way past).
 
@@ -201,7 +201,7 @@ impl TunnelTraffic {
 /// (`local_port` = the tunnel's port). Only the client side is wanted, or every
 /// connection is counted twice and the listener is reported as its own client.
 ///
-/// `exclude` drops tunman's own pid and ssh's: with metering on, tunman holds
+/// `exclude` drops TunMan's own pid and ssh's: with metering on, TunMan holds
 /// both ends of the loopback pair, and counting itself as a user of its own
 /// tunnel is noise.
 pub fn clients_of(
@@ -276,7 +276,7 @@ mod tests {
         assert!(clients_of(&rows, 1080, &[]).is_empty());
     }
 
-    /// With metering on, tunman holds both ends of the loopback pair. Listing
+    /// With metering on, TunMan holds both ends of the loopback pair. Listing
     /// itself as a user of its own tunnel is pure noise.
     #[test]
     fn our_own_processes_are_excluded() {

@@ -365,7 +365,7 @@ impl TunnelTask {
         let t = &self.tunnel;
         let name = t.name.clone();
 
-        // With metering on, ssh takes a private port and tunman takes the
+        // With metering on, ssh takes a private port and TunMan takes the
         // advertised one. Port 0 lets the OS pick a free one; we bind, read the
         // number and immediately drop it, which leaves a tiny race that
         // ExitOnForwardFailure turns into a clean retry rather than a silent
@@ -391,7 +391,7 @@ impl TunnelTask {
             // processes holding ports is worse than one that drops them.
             .kill_on_drop(true);
         if t.auth == AuthMode::Password {
-            // ssh runs this helper to answer the prompt; the helper is tunman
+            // ssh runs this helper to answer the prompt; the helper is TunMan
             // itself, reading the password from the environment it inherits.
             if let Ok(exe) = std::env::current_exe() {
                 cmd.env("SSH_ASKPASS", exe);
@@ -581,9 +581,9 @@ async fn pump<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
         }
         if is_err {
             *last_line.lock() = line.clone();
-            warn!(target: "tunman::ssh", tunnel = %tunnel, "{line}");
+            warn!(target: "TunMan::ssh", tunnel = %tunnel, "{line}");
         } else {
-            info!(target: "tunman::ssh", tunnel = %tunnel, "{line}");
+            info!(target: "TunMan::ssh", tunnel = %tunnel, "{line}");
         }
     }
 }
