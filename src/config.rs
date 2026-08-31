@@ -28,6 +28,9 @@ pub struct Settings {
     /// `--hidden`, which is how the auto-start entry runs it.
     pub start_hidden: bool,
     pub start_with_windows: bool,
+    /// Keep a Start Menu shortcut pointing at the running executable,
+    /// refreshed on every launch so it survives the binary moving.
+    pub start_menu_shortcut: bool,
     /// Master switch for per-tunnel `auto_start`. Off means no tunnel comes up
     /// on its own, whatever the individual flags say — one place to stop
     /// everything without editing every tunnel.
@@ -65,6 +68,7 @@ impl Default for Settings {
             ssh_path: "ssh".to_string(),
             start_hidden: false,
             start_with_windows: false,
+            start_menu_shortcut: true,
             autostart_tunnels: true,
             probe_enabled: false,
             probe_target: "example.com:443".to_string(),

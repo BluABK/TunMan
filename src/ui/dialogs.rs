@@ -891,6 +891,24 @@ pub fn show_settings(app: &mut TunManApp, ctx: &egui::Context) {
                     );
                     ui.checkbox(&mut cfg.start_hidden, "Start minimised to tray")
                         .on_hover_text("Launch straight to the tray with no window.");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut cfg.start_menu_shortcut, "Start Menu shortcut")
+                            .on_hover_text(
+                                "Keep a shortcut in your Start Menu, rewritten on every \
+                                 launch to point at whatever binary is actually running. \
+                                 That is the useful part: TunMan runs from wherever it was \
+                                 built, and a shortcut left pointing at a moved exe fails \
+                                 silently from the Start Menu while the app works fine \
+                                 launched directly.",
+                            );
+                        if crate::platform::start_menu_shortcut_exists() {
+                            ui.weak("✔").on_hover_text(
+                                crate::platform::start_menu_shortcut_path()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_default(),
+                            );
+                        }
+                    });
                     ui.checkbox(&mut cfg.autostart_tunnels, "Auto-start tunnels").on_hover_text(
                         "Master switch for the per-tunnel \"Start with TunMan\" setting. \
                              Off means nothing comes up on its own.",
@@ -983,9 +1001,26 @@ pub fn show_settings(app: &mut TunManApp, ctx: &egui::Context) {
 
     if save {
         let autostart_changed = cfg.start_with_windows != app.cfg.settings.start_with_windows;
+        let shortcut_changed = cfg.start_menu_shortcut != app.cfg.settings.start_menu_shortcut;
         app.cfg.settings = cfg;
         if autostart_changed {
             apply_autostart(app);
+        }
+        // Unticking has to actually delete it. Merely stopping the refresh
+        // would leave the shortcut sitting in the Start Menu forever, which is
+        // not what unticking a box called "Start Menu shortcut" means.
+        if shortcut_changed {
+            if app.cfg.settings.start_menu_shortcut {
+                match crate::platform::create_start_menu_shortcut() {
+                    Ok(p) => app.note(format!("Start Menu shortcut created at {}", p.display())),
+                    Err(e) => app.note(format!("Could not create the shortcut: {e}")),
+                }
+            } else {
+                match crate::platform::remove_start_menu_shortcut() {
+                    Ok(()) => app.note("Start Menu shortcut removed"),
+                    Err(e) => app.note(format!("Could not remove the shortcut: {e}")),
+                }
+            }
         }
         app.save_config();
         app.settings_open = false;

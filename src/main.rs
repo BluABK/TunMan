@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::Result;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -89,6 +89,17 @@ fn main() -> Result<()> {
     };
     app_paths::ensure_dir(&app_paths::data_dir());
     prune_old_logs(&app_paths::logs_dir(), cfg.settings.log_retention_days);
+
+    // Refreshed on every run rather than created once: TunMan is launched from
+    // wherever it was built, and a shortcut left pointing at a moved binary
+    // fails silently from the Start Menu while the app itself works fine.
+    // Done here, before the GUI, so it cannot race winit's own COM setup.
+    if cfg.settings.start_menu_shortcut {
+        match platform::create_start_menu_shortcut() {
+            Ok(p) => debug!("Start Menu shortcut at {}", p.display()),
+            Err(e) => warn!("could not write the Start Menu shortcut: {e}"),
+        }
+    }
 
     let start_hidden =
         cfg.settings.start_hidden || std::env::args().any(|a| a == "--hidden" || a == "-Embedding");

@@ -98,6 +98,101 @@ pub fn tray_icon_image() -> anyhow::Result<tray_icon::Icon> {
     Ok(tray_icon::Icon::from_rgba(rgba, w, h)?)
 }
 
+/// Where the Start Menu shortcut goes:
+/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\TunMan.lnk`.
+///
+/// The per-user Start Menu, not the machine-wide one — writing to
+/// `%ProgramData%` needs elevation, and TunMan is a per-user app.
+pub fn start_menu_shortcut_path() -> Option<std::path::PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    Some(
+        std::path::Path::new(&appdata)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("TunMan.lnk"),
+    )
+}
+
+/// Create or overwrite the Start Menu shortcut, pointing at the running exe.
+///
+/// **Overwriting every time is the point.** TunMan is run from wherever it was
+/// built or unpacked, and a shortcut left pointing at a moved or renamed binary
+/// is worse than none — it fails silently from the Start Menu while the app
+/// works fine when launched directly. Rewriting it on each run means the
+/// shortcut always points at whatever is actually running.
+#[cfg(windows)]
+pub fn create_start_menu_shortcut() -> Result<std::path::PathBuf, String> {
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize, IPersistFile,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::{HSTRING, Interface, PCWSTR};
+
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let lnk = start_menu_shortcut_path().ok_or("APPDATA is not set")?;
+    if let Some(dir) = lnk.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    }
+
+    unsafe {
+        // May return S_FALSE (already initialised on this thread), which is
+        // success — only balance the uninit when it actually succeeded, or a
+        // caller that had COM up first would have it torn down underneath.
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let result = (|| -> Result<(), String> {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| format!("ShellLink: {e}"))?;
+            link.SetPath(PCWSTR(HSTRING::from(exe.as_os_str()).as_ptr()))
+                .map_err(|e| format!("SetPath: {e}"))?;
+            if let Some(parent) = exe.parent() {
+                link.SetWorkingDirectory(PCWSTR(HSTRING::from(parent.as_os_str()).as_ptr()))
+                    .map_err(|e| format!("SetWorkingDirectory: {e}"))?;
+            }
+            link.SetDescription(PCWSTR(
+                HSTRING::from("TunMan — SSH tunnels, mounts and sync").as_ptr(),
+            ))
+            .map_err(|e| format!("SetDescription: {e}"))?;
+            let file: IPersistFile = link.cast().map_err(|e| format!("IPersistFile: {e}"))?;
+            file.Save(PCWSTR(HSTRING::from(lnk.as_os_str()).as_ptr()), true)
+                .map_err(|e| format!("Save: {e}"))?;
+            Ok(())
+        })();
+        if com.is_ok() {
+            CoUninitialize();
+        }
+        result?;
+    }
+    Ok(lnk)
+}
+
+#[cfg(not(windows))]
+pub fn create_start_menu_shortcut() -> Result<std::path::PathBuf, String> {
+    Err("Start Menu shortcuts are Windows-only".into())
+}
+
+/// Remove the shortcut. A missing one is success — the desired end state is
+/// "there is no shortcut", and it already holds.
+pub fn remove_start_menu_shortcut() -> Result<(), String> {
+    let Some(lnk) = start_menu_shortcut_path() else { return Ok(()) };
+    match std::fs::remove_file(&lnk) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("removing {}: {e}", lnk.display())),
+    }
+}
+
+/// Whether the shortcut exists and points at the running exe.
+///
+/// Only the existence is checked, not the target: reading a `.lnk` back means
+/// another round of COM for a cosmetic label, and the shortcut is rewritten on
+/// every run anyway.
+pub fn start_menu_shortcut_exists() -> bool {
+    start_menu_shortcut_path().is_some_and(|p| p.exists())
+}
+
 /// One process from the OS process list.
 #[derive(Clone, Debug)]
 pub struct SnapProc {

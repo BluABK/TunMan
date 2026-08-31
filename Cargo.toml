@@ -51,6 +51,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_Security",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
 ] }
 
 # egui and image decoding are unusably slow unoptimised — scrolling judders and
