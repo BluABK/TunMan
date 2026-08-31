@@ -655,9 +655,8 @@ pub fn show_job_editor(app: &mut TunManApp, ctx: &egui::Context) {
                         });
                     };
 
-                ui.label("Source").on_hover_text(
-                    "An rclone path: a remote like `nas:photos`, or a local path.",
-                );
+                ui.label("Source")
+                    .on_hover_text("An rclone path: a remote like `nas:photos`, or a local path.");
                 pick(ui, &mut ed.draft.source, &app.rclone_remotes, "src_pick");
                 ui.end_row();
 
