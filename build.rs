@@ -25,6 +25,12 @@ fn main() {
         .unwrap_or_else(|| "0".to_string());
     println!("cargo:rustc-env=BUILD_NUMBER={builds}");
 
+    // `.git/HEAD` alone is not enough: on a normal commit it keeps the same
+    // contents ("ref: refs/heads/master") and only the ref file underneath it
+    // moves, so watching HEAD by itself leaves the version string stuck at
+    // whatever it was when the crate was first built. Watching the refs
+    // directory catches commits; HEAD still catches branch switches.
     println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
     println!("cargo:rerun-if-changed=build.rs");
 }
