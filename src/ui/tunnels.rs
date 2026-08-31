@@ -415,9 +415,19 @@ fn cell(
         // its own measured content, the label inside truncated itself to the
         // width it was offered, and the two fed each other down to nothing. One
         // label in a fixed-width column cannot collapse that way.
+        // Server, with its resolved address right beside the hostname.
         C::Server => {
             let target = def.map(|t| t.target()).unwrap_or_default();
-            ui.label(&target).on_hover_text(if r.server_ip.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(&target);
+                if r.server_ip.is_empty() {
+                    ui.weak("·").on_hover_text("Not resolved yet.");
+                } else {
+                    ui.weak(&r.server_ip);
+                }
+            })
+            .response
+            .on_hover_text(if r.server_ip.is_empty() {
                 format!("{target}\n\nAddress not resolved yet.")
             } else {
                 format!("{target}\nResolves to {} (local DNS lookup).", r.server_ip)

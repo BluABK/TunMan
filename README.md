@@ -92,8 +92,8 @@ side's own latency, not just the hop to the server. The row shows the last
 probe and the average of the last few on hover; one slow probe on a busy link
 is noise, a raised average is the tunnel being slow.
 
-The **server's own address** comes from a plain local DNS lookup and sits in
-the Server column's hover, so you never have to resolve it yourself.
+The **server's own address** sits beside its hostname, from a plain local DNS
+lookup, so you never have to resolve it yourself.
 
 **Availability** is the share of observed time a tunnel has been up, alongside
 its restart and consecutive-failure counts. It is counted only while TunMan is
