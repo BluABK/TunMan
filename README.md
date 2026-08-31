@@ -245,7 +245,11 @@ removing something that is not a leftover:
 
 Every probe is time-boxed, because a dead mount point does not fail when read —
 it hangs, for as long as the filesystem driver takes to give up. A supervisor
-waiting on one has stopped supervising.
+waiting on one has stopped supervising. Giving up on a read does not stop it,
+though: the thread doing it is still stuck in the filesystem. So only one probe
+of a given mount point runs at a time, and while one is outstanding the answer
+is "not answering" — which is what silence there means. A wedged mount point
+therefore costs one stuck thread, not one per check.
 
 rclone mounts pick from the remotes already in your rclone config, so there is
 nothing to retype. **rclone's `sftp` backend does the same job as sshfs**, which

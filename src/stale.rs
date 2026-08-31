@@ -25,8 +25,12 @@
 //! *hangs*, sometimes for the full network timeout, and a supervisor that waits
 //! on one is a supervisor that has stopped supervising.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 /// How long to wait for a mount point to answer before calling it dead and
 /// clearing it. Deliberately the more patient of the two: this decision leads
@@ -147,19 +151,53 @@ pub fn looks_occupied(err: &str) -> bool {
     .any(|s| e.contains(s))
 }
 
+/// Mount points with a probe still running.
+///
+/// An abandoned probe is still sitting in `read_dir` on a filesystem that is
+/// not answering; starting another one against the same path adds a thread and
+/// learns nothing. So a second probe does not start — it takes the outstanding
+/// one's silence as the answer, which is what silence means here.
+static PROBING: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Holds a path in [`PROBING`] for as long as its probe runs, including after
+/// the probe has been given up on — the thread is what has to finish, not the
+/// wait for it.
+struct ProbeSlot(PathBuf);
+
+impl ProbeSlot {
+    /// Claim `path`, or `None` if a probe of it is already running.
+    fn claim(path: &Path) -> Option<ProbeSlot> {
+        PROBING.lock().insert(path.to_path_buf()).then(|| ProbeSlot(path.to_path_buf()))
+    }
+}
+
+impl Drop for ProbeSlot {
+    fn drop(&mut self) {
+        PROBING.lock().remove(&self.0);
+    }
+}
+
 /// Read a directory, giving up after `timeout`.
 ///
 /// On its own thread because there is no interruptible directory read: a dead
 /// mount point blocks the caller until the filesystem driver gives up, which
-/// can be minutes. The thread is abandoned rather than joined — it will finish
-/// on its own eventually, and nothing waits on it.
+/// can be minutes. The thread is abandoned rather than joined — nothing waits
+/// on it — but it keeps its claim until it actually returns, so a mount point
+/// that is wedged collects one stuck thread rather than one per check.
+///
+/// `None` means "did not answer", whether that is because the read timed out or
+/// because an earlier read of the same path has not come back yet.
 fn entries_within(path: PathBuf, timeout: Duration) -> Option<std::io::Result<usize>> {
+    let slot = ProbeSlot::claim(&path)?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("mountpoint-probe".into())
         .spawn(move || {
             let r = std::fs::read_dir(&path).map(|it| it.take(1).count());
             let _ = tx.send(r);
+            // Released here, not when the wait below gives up: until this
+            // returns, the path is still being read.
+            drop(slot);
         })
         .ok()?;
     rx.recv_timeout(timeout).ok()
@@ -377,6 +415,38 @@ pub fn clear_if_stale(target: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bound on stuck threads. A probe that never returns must not be
+    /// joined by a second one: the point of the timeout is to stop waiting, and
+    /// if every check spawned another reader, a wedged mount point would
+    /// accumulate one thread per check for as long as it stayed wedged.
+    #[test]
+    fn only_one_probe_of_a_path_runs_at_a_time() {
+        let path = std::env::temp_dir().join("TunMan-probe-slot");
+        let first = ProbeSlot::claim(&path).expect("first claim");
+        assert!(ProbeSlot::claim(&path).is_none(), "a second probe must not start");
+        // A different path is unaffected — one stuck mount must not stop the
+        // others being checked.
+        let other = ProbeSlot::claim(&path.join("elsewhere")).expect("a different path");
+
+        drop(first);
+        assert!(ProbeSlot::claim(&path).is_some(), "released once the probe finishes");
+        drop(other);
+    }
+
+    /// And the reading a caller gets while a probe is outstanding: not
+    /// answering. Anything else would report a wedged mount point as healthy.
+    #[test]
+    fn a_path_already_being_probed_reads_as_no_answer() {
+        let dir = std::env::temp_dir().join("TunMan-probe-busy");
+        let _ = std::fs::create_dir_all(&dir);
+        let held = ProbeSlot::claim(&dir).expect("claim");
+        assert!(entries_within(dir.clone(), Duration::from_millis(50)).is_none());
+        drop(held);
+        // Released, so the same path answers normally again.
+        assert!(matches!(entries_within(dir.clone(), PROBE_TIMEOUT), Some(Ok(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_drive_letter_is_recognised_however_it_is_written() {
