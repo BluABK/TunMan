@@ -97,6 +97,14 @@ pub struct Config {
     pub jobs: Vec<SyncJob>,
 }
 
+/// `<name>.bak` beside `path`.
+pub fn backup_path(path: &Path) -> std::path::PathBuf {
+    path.with_file_name(format!(
+        "{}.bak",
+        path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()
+    ))
+}
+
 impl Config {
     /// Load from `path`. A missing file is not an error — it is a first run,
     /// and returns defaults.
@@ -112,6 +120,12 @@ impl Config {
     /// Write to `path` atomically: a temp file in the same directory, then a
     /// rename. Same-directory matters — a rename across volumes is a copy, and
     /// stops being atomic.
+    ///
+    /// The version being replaced is copied to `<name>.bak` first. Atomicity
+    /// protects against a *torn* write; it does nothing about a save that is
+    /// perfectly well-formed and wrong — an overwrite by another instance, or a
+    /// definition deleted by mistake. One generation back is enough to undo
+    /// either, and it costs a file copy of a few kilobytes.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             crate::app_paths::ensure_dir(dir);
@@ -119,6 +133,17 @@ impl Config {
         let text = toml::to_string_pretty(self).context("serialising config")?;
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+
+        // Best effort: a backup that cannot be written must not stop the save,
+        // or a permissions problem on one file would make the app unable to
+        // keep any settings at all.
+        if path.exists() {
+            let bak = backup_path(path);
+            if let Err(e) = std::fs::copy(path, &bak) {
+                tracing::warn!("could not back up {}: {e}", path.display());
+            }
+        }
+
         std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     }
@@ -312,6 +337,66 @@ mod tests {
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), c);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The point of the backup: a save that is well-formed but WRONG - an
+    /// overwrite by something else, a definition deleted by mistake - leaves
+    /// the previous version recoverable. Atomicity does nothing for that case,
+    /// because nothing was torn.
+    #[test]
+    fn saving_keeps_the_version_it_replaced() {
+        let path = std::env::temp_dir().join("TunMan-backup-test.toml");
+        let bak = backup_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&bak);
+
+        let original = sample();
+        original.save(&path).unwrap();
+        assert!(!bak.exists(), "nothing to back up on the first save");
+
+        // Now clobber it with something else, as a stray test run would.
+        let clobbered = Config::default();
+        clobbered.save(&path).unwrap();
+
+        assert_eq!(Config::load(&path).unwrap(), clobbered, "the live file was replaced");
+        assert_eq!(
+            Config::load(&bak).unwrap(),
+            original,
+            "and the tunnels that were there are still recoverable"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&bak);
+    }
+
+    /// One generation, and always the immediately previous one - a backup of a
+    /// backup would be worse than useless.
+    #[test]
+    fn the_backup_is_always_the_previous_version() {
+        let path = std::env::temp_dir().join("TunMan-backup-gen.toml");
+        let bak = backup_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&bak);
+
+        let named = |n: &str| Config {
+            tunnels: vec![Tunnel { name: n.into(), host: "h".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        named("first").save(&path).unwrap();
+        named("second").save(&path).unwrap();
+        named("third").save(&path).unwrap();
+
+        assert_eq!(Config::load(&path).unwrap().tunnels[0].name, "third");
+        assert_eq!(Config::load(&bak).unwrap().tunnels[0].name, "second");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&bak);
+    }
+
+    #[test]
+    fn the_backup_sits_beside_the_config_not_in_place_of_it() {
+        let p = std::path::Path::new("/tmp/TunMan.toml");
+        assert_eq!(backup_path(p), std::path::Path::new("/tmp/TunMan.toml.bak"));
     }
 
     #[test]

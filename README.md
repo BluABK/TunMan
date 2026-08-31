@@ -258,6 +258,17 @@ are atomic — a temp file then a rename — and **a file TunMan could not parse
 never overwritten**: a typo in a hand-edit surfaces as a banner and saving is
 refused until you fix it, rather than costing you the file.
 
+**The version being replaced is kept as `TunMan.toml.bak`.** Atomicity only
+protects against a *torn* write; it does nothing about a save that is perfectly
+well-formed and wrong — another instance overwriting yours, or a definition
+deleted by mistake. One generation back undoes either. If the config goes
+missing while a backup is beside it, TunMan says so on startup and offers to
+restore it.
+
+Set **`TUNMAN_CONFIG`** to point at a different file. Use it for anything
+throwaway — a second instance, a test run — so nothing but the real TunMan can
+ever write the real config.
+
 ## Authentication
 
 Key or agent by default, run under `BatchMode=yes` so ssh fails fast and loudly

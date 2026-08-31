@@ -21,8 +21,32 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("TunMan-data"))
 }
 
+/// Environment override for the config file.
+///
+/// Exists so that testing, or a second throwaway instance, can never touch the
+/// real one. This is not hypothetical: during development the live config was
+/// used as a scratch file for smoke tests and then deleted in cleanup, taking a
+/// working tunnel with it. A separate path costs one variable and removes the
+/// whole class of accident.
+pub const CONFIG_ENV: &str = "TUNMAN_CONFIG";
+
 pub fn config_path() -> PathBuf {
+    if let Some(p) = std::env::var_os(CONFIG_ENV) {
+        let p = PathBuf::from(p);
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
     data_dir().join("TunMan.toml")
+}
+
+/// The previous contents of the config, kept beside it.
+pub fn config_backup_path() -> PathBuf {
+    let p = config_path();
+    p.with_file_name(format!(
+        "{}.bak",
+        p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()
+    ))
 }
 
 /// The bandwidth ledger. JSON rather than TOML: it is machine-written,
@@ -40,4 +64,27 @@ pub fn logs_dir() -> PathBuf {
 /// attached, which is a far better message than one from here).
 pub fn ensure_dir(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The override exists so a test run can never reach the real config. If
+    /// it stopped working, the next stray smoke test would eat someone's
+    /// tunnels again - which is exactly how this came to be here.
+    #[test]
+    fn the_config_env_override_wins_over_the_default_location() {
+        // Serialised implicitly: this is the only test touching the variable.
+        unsafe { std::env::set_var(CONFIG_ENV, r"C:\somewhere\else.toml") };
+        assert_eq!(config_path(), PathBuf::from(r"C:\somewhere\else.toml"));
+        assert_eq!(config_backup_path(), PathBuf::from(r"C:\somewhere\else.toml.bak"));
+
+        // An empty value is not a path; fall back rather than writing to "".
+        unsafe { std::env::set_var(CONFIG_ENV, "") };
+        assert_eq!(config_path(), data_dir().join("TunMan.toml"));
+
+        unsafe { std::env::remove_var(CONFIG_ENV) };
+        assert_eq!(config_path(), data_dir().join("TunMan.toml"));
+    }
 }

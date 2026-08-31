@@ -86,6 +86,8 @@ pub struct TunManApp {
     /// A config we could not parse. Held so saving is refused rather than
     /// overwriting whatever the user was in the middle of hand-editing.
     pub load_error: Option<String>,
+    /// Set when the config is missing but a backup is sitting beside it.
+    pub restore_offer: Option<std::path::PathBuf>,
 }
 
 impl TunManApp {
@@ -102,6 +104,7 @@ impl TunManApp {
         ui_rx: Receiver<UiCommand>,
         start_hidden: bool,
         load_error: Option<String>,
+        restore_offer: Option<std::path::PathBuf>,
     ) -> TunManApp {
         let rclone_remotes = crate::mounts::list_remotes(&cfg.settings.rclone_path);
         TunManApp {
@@ -135,6 +138,7 @@ impl TunManApp {
             log: log_view::LogViewState::default(),
             toast: None,
             load_error,
+            restore_offer,
         }
     }
 
@@ -352,6 +356,41 @@ impl eframe::App for TunManApp {
                 });
             });
             ui.separator();
+
+            if let Some(bak) = self.restore_offer.clone() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(ui.visuals().warn_fg_color, "⚠");
+                    ui.label("Your config is missing, but the previous version is still here.");
+                    if ui
+                        .button("↺ Restore it")
+                        .on_hover_text(format!(
+                            "Load {} and save it back as the live config.",
+                            bak.display()
+                        ))
+                        .clicked()
+                    {
+                        match Config::load(&bak) {
+                            Ok(c) => {
+                                let n = c.tunnels.len();
+                                self.cfg = c;
+                                self.restore_offer = None;
+                                self.save_config();
+                                self.send(Command::StartAll);
+                                self.note(format!("Restored {n} tunnels from the backup"));
+                            }
+                            Err(e) => self.note(format!("Could not read the backup: {e}")),
+                        }
+                    }
+                    if ui
+                        .button("✖")
+                        .on_hover_text("Dismiss. The backup file is left alone.")
+                        .clicked()
+                    {
+                        self.restore_offer = None;
+                    }
+                });
+                ui.separator();
+            }
 
             if let Some(err) = self.load_error.clone() {
                 ui.horizontal_wrapped(|ui| {

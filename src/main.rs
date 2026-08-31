@@ -76,6 +76,14 @@ fn main() -> Result<()> {
     };
 
     let config_path = app_paths::config_path();
+    // A config that has vanished while a backup sits next to it is worth
+    // saying out loud rather than silently starting empty — that is exactly
+    // what an accidental deletion looks like from in here.
+    let restore_offer = (!config_path.exists() && app_paths::config_backup_path().exists())
+        .then(app_paths::config_backup_path);
+    if let Some(bak) = &restore_offer {
+        warn!("no config at {} — but a backup exists at {}", config_path.display(), bak.display());
+    }
     let (cfg, load_error) = match config::Config::load(&config_path) {
         Ok(c) => (c, None),
         Err(e) => {
@@ -172,6 +180,7 @@ fn main() -> Result<()> {
                 ui_rx,
                 start_hidden,
                 load_error,
+                restore_offer,
             )))
         }),
     );
