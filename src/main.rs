@@ -10,6 +10,10 @@
 mod app_paths;
 mod config;
 mod geo;
+/// The app icon as pixels. Kept dependency-free and free of inner doc
+/// comments because `build.rs` includes this same source to render the `.ico`
+/// it embeds in the exe — `include!` rejects `//!`.
+mod icon_art;
 mod jobs;
 mod log_capture;
 mod logfmt;

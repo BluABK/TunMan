@@ -59,12 +59,25 @@ is lost by narrowing: select a row and the detail panel spells out every
 dropped column, and each row's name carries a summary in its hover. The Mounts
 and Sync tables work the same way.
 
+**Its icon lives inside the exe.** Windows takes the icon for a shortcut, an
+Explorer listing and the taskbar button of a program launched from a shortcut
+out of the executable's own resources — the icon a running app hands to its
+window is a separate thing Explorer never sees, which is why an app can show
+the right icon in its title bar and a blank page in the Start Menu. The build
+script renders the icon into a multi-size `.ico` (16 through 256, since a size
+Windows cannot find it scales from one it can) and embeds it. The drawing
+lives in one file that both the build script and the app use, so the two can
+never disagree.
+
 **It puts itself in the Start Menu.** On every launch TunMan writes
 `%APPDATA%\…\Start Menu\Programs\Blu Software\TunMan.lnk` pointing at the
 binary that is actually running, grouped in one folder with everything else
 from the same author rather than scattered through Programs. Rewriting it every time is the useful part: TunMan runs from
 wherever it was built or unpacked, and a shortcut left pointing at a moved exe
 fails silently from the Start Menu while the app works fine launched directly.
+The shortcut also names the exe as its icon source explicitly, which is what
+makes an already-written shortcut pick up a new icon instead of keeping the one
+the shell cached for it.
 Turn it off in Settings and the shortcut is removed rather than merely left to
 go stale.
 
@@ -150,6 +163,13 @@ PID    Process           Conns  Destination        In       Out
 24180  streamarchiver.exe  1/2   i.ytimg.com:443    880 KB     9 KB
 31002  firefox.exe         1/1   7tv.io:443          21 KB     3 KB
 ```
+
+The process behind a connection is looked up once, when the connection is
+accepted and its socket is still in the TCP table. That name is then remembered
+for the pid, so rows whose connections have all since closed still say who
+opened them rather than going blank — a row that shows only a number is a
+connection whose owner had already gone by the time it was asked about, not one
+TunMan forgot.
 
 The sniffing only ever *reads* — bytes are forwarded verbatim, so a protocol
 quirk the parser does not understand costs the destination label and nothing

@@ -91,12 +91,30 @@ pub struct TunnelTraffic {
     pub closed: Mutex<HashMap<(u32, String), Agg>>,
     /// Unmetered view: process id → live connection count, from the TCP table.
     pub observed: Mutex<Vec<(u32, String, u64)>>,
+    /// Process name per pid, remembered for as long as the tunnel lives.
+    ///
+    /// A closed connection's aggregate is keyed by `(pid, dest)` and carries no
+    /// name, so without this every row whose connections have all finished
+    /// showed a blank process — including rows for a pid that was named on the
+    /// row right above it, which reads as a bug in the naming rather than as
+    /// what it is. Windows can recycle a pid, and then a row could carry the
+    /// previous owner's name; over a tunnel's lifetime that is far rarer than
+    /// the blank it replaces.
+    pub names: Mutex<HashMap<u32, String>>,
     /// Lifetime totals, including closed connections.
     pub total_in: AtomicU64,
     pub total_out: AtomicU64,
 }
 
 impl TunnelTraffic {
+    /// Start tracking a live connection, remembering who opened it.
+    pub fn admit(&self, entry: Arc<ConnEntry>) {
+        if !entry.process.is_empty() {
+            self.names.lock().insert(entry.pid, entry.process.clone());
+        }
+        self.active.lock().push(entry);
+    }
+
     /// Fold a finished connection into the closed aggregate and drop it from
     /// the live list.
     pub fn retire(&self, entry: &Arc<ConnEntry>) {
@@ -169,6 +187,21 @@ impl TunnelTraffic {
                         out_bytes: 0,
                     },
                 );
+            }
+        }
+
+        // A row whose connections have all closed has no name of its own: the
+        // closed aggregate is keyed by pid and destination only. The pid is
+        // still the answer to "who", so fill it in from what this tunnel has
+        // seen rather than showing a blank beside a named row for the same pid.
+        {
+            let names = self.names.lock();
+            for row in by_key.values_mut() {
+                if row.process.is_empty()
+                    && let Some(name) = names.get(&row.pid)
+                {
+                    row.process = name.clone();
+                }
             }
         }
 
@@ -301,6 +334,52 @@ mod tests {
         assert_eq!(rows[0].total_conns, 3, "two closed plus the live one");
         assert_eq!(rows[0].in_bytes, 150);
         assert_eq!(rows[0].process, "sa.exe");
+    }
+
+    /// A row keeps its process name after every one of its connections has
+    /// closed. The closed aggregate is keyed by pid and destination only, so
+    /// without the name map the detail table showed one named row — the one
+    /// that still had a live connection — and a column of blanks beside it,
+    /// all for the same pid.
+    #[test]
+    fn a_closed_row_still_says_who_opened_it() {
+        let t = TunnelTraffic::default();
+        for dest in ["a.example:443", "b.example:443"] {
+            let e = Arc::new(ConnEntry::new(7, "client.exe".into(), dest.into()));
+            e.in_bytes.store(1000, Ordering::Relaxed);
+            t.admit(e.clone());
+            t.retire(&e);
+        }
+        // A live one as well: that row could name the process from its own
+        // entry, and the closed ones had nothing to name themselves from.
+        let live = Arc::new(ConnEntry::new(7, "client.exe".into(), "c.example:443".into()));
+        t.admit(live);
+
+        let rows = t.rows();
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.iter().all(|r| r.process == "client.exe"),
+            "every row is the same pid and should carry the same name: {rows:?}"
+        );
+    }
+
+    /// The name is remembered per pid, not per connection, so a connection
+    /// whose owner could not be identified at all stays honest about it.
+    #[test]
+    fn an_unidentified_owner_is_not_given_someone_elses_name() {
+        let t = TunnelTraffic::default();
+        let named = Arc::new(ConnEntry::new(7, "sa.exe".into(), "a:443".into()));
+        t.admit(named.clone());
+        t.retire(&named);
+        // pid 0 is what `owner_of` returns when the socket closed before it
+        // could be looked up.
+        let unknown = Arc::new(ConnEntry::new(0, String::new(), "b:443".into()));
+        t.admit(unknown.clone());
+        t.retire(&unknown);
+
+        let rows = t.rows();
+        let unknown_row = rows.iter().find(|r| r.pid == 0).expect("a row for the unknown owner");
+        assert!(unknown_row.process.is_empty(), "got {:?}", unknown_row.process);
     }
 
     /// Retiring must move the bytes, not lose them — a tunnel's totals should

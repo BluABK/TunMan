@@ -184,7 +184,7 @@ async fn handle_conn(
         process,
         if sniff_socks { "(resolving)".to_string() } else { fixed_dest },
     ));
-    traffic.active.lock().push(entry.clone());
+    traffic.admit(entry.clone());
 
     let (mut cr, mut cw) = client.into_split();
     let (mut sr, mut sw) = server.into_split();

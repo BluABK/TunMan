@@ -57,39 +57,7 @@ pub fn notify_running_instance() {
 /// 16 px matters more here than detail.
 pub fn app_icon_rgba() -> (Vec<u8>, u32, u32) {
     const N: u32 = 32;
-    const CYAN: [u8; 4] = [0x22, 0xd3, 0xee, 0xff];
-    const DARK: [u8; 4] = [0x0b, 0x16, 0x20, 0xff];
-    const CORNER: f32 = 5.0;
-    // Portal: a semicircle sitting on a rectangle, centred and open at the
-    // bottom edge, so it still reads as an arch when scaled down.
-    const AX: f32 = 16.0;
-    const AY: f32 = 15.0;
-    const AR: f32 = 7.0;
-    const FLOOR: f32 = 27.0;
-
-    let mut px = vec![0u8; (N * N * 4) as usize];
-    for y in 0..N {
-        for x in 0..N {
-            let i = ((y * N + x) * 4) as usize;
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-
-            // Rounded-corner mask: clamp the point into the inner rect and
-            // measure how far outside it fell.
-            let cx = fx.clamp(CORNER, N as f32 - CORNER);
-            let cy = fy.clamp(CORNER, N as f32 - CORNER);
-            if ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() > CORNER {
-                continue; // transparent
-            }
-
-            let in_arch = if fy < AY {
-                ((fx - AX).powi(2) + (fy - AY).powi(2)).sqrt() <= AR
-            } else {
-                (fx - AX).abs() <= AR && fy <= FLOOR
-            };
-            px[i..i + 4].copy_from_slice(if in_arch { &DARK } else { &CYAN });
-        }
-    }
-    (px, N, N)
+    (crate::icon_art::rgba(N), N, N)
 }
 
 /// The same icon as a tray icon.
@@ -178,6 +146,13 @@ pub fn create_start_menu_shortcut() -> Result<std::path::PathBuf, String> {
                 HSTRING::from("TunMan — SSH tunnels, mounts and sync").as_ptr(),
             ))
             .map_err(|e| format!("SetDescription: {e}"))?;
+            // Name the icon source explicitly, rather than leaving the shell to
+            // infer it. Index 0 is the exe's first icon resource — the one
+            // build.rs embeds. A shortcut written before the exe had an icon
+            // keeps showing the generic page until something rewrites it, and
+            // this is what rewrites it.
+            link.SetIconLocation(PCWSTR(HSTRING::from(exe.as_os_str()).as_ptr()), 0)
+                .map_err(|e| format!("SetIconLocation: {e}"))?;
             let file: IPersistFile = link.cast().map_err(|e| format!("IPersistFile: {e}"))?;
             file.Save(PCWSTR(HSTRING::from(lnk.as_os_str()).as_ptr()), true)
                 .map_err(|e| format!("Save: {e}"))?;
@@ -462,11 +437,24 @@ mod tests {
         assert_eq!(px.len(), (w * h * 4) as usize);
         assert!(px.chunks(4).any(|p| p[3] > 0), "icon is fully transparent");
 
-        // Both the tile and the portal must be present — a solid square would
-        // be indistinguishable from any other tray icon at 16 px.
-        let colours: std::collections::HashSet<[u8; 4]> =
-            px.chunks(4).filter(|p| p[3] > 0).map(|p| [p[0], p[1], p[2], p[3]]).collect();
-        assert_eq!(colours.len(), 2, "expected exactly the tile and the portal");
+        // Both the tile and the portal must be present — a solid square would be
+        // indistinguishable from any other tray icon at 16 px. Checked by the
+        // two commonest colours rather than by the set of them: the drawing is
+        // anti-aliased, so every boundary contributes blends that belong to
+        // neither field, and those must stay a minority.
+        let mut counts: std::collections::HashMap<[u8; 3], usize> =
+            std::collections::HashMap::new();
+        for p in px.chunks(4).filter(|p| p[3] == 255) {
+            *counts.entry([p[0], p[1], p[2]]).or_default() += 1;
+        }
+        let mut ranked: Vec<([u8; 3], usize)> = counts.into_iter().collect();
+        ranked.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let top: Vec<[u8; 3]> = ranked.iter().take(2).map(|(c, _)| *c).collect();
+        assert!(top.contains(&[0x22, 0xd3, 0xee]), "cyan tile missing: {ranked:?}");
+        assert!(top.contains(&[0x0b, 0x16, 0x20]), "dark portal missing: {ranked:?}");
+        let edges: usize = ranked.iter().skip(2).map(|(_, n)| n).sum();
+        let fields: usize = ranked.iter().take(2).map(|(_, n)| n).sum();
+        assert!(edges * 4 < fields, "too much of the icon is edge blending: {ranked:?}");
 
         // Corners rounded off, so it doesn't read as a plain block.
         assert_eq!(px[3], 0, "top-left corner should be transparent");
