@@ -225,19 +225,7 @@ pub fn args(m: &Mount, rclone_path: &str, sshfs_path: &str) -> (String, Vec<Stri
 /// stale while its process stays perfectly happy, and reading the directory is
 /// the only thing that finds out.
 pub fn is_mounted(target: &str) -> bool {
-    let path = PathBuf::from(target.trim());
-    if path.as_os_str().is_empty() {
-        return false;
-    }
-    // A drive letter needs the trailing separator; `X:` alone means "the
-    // current directory on X:", which is a different thing and can succeed
-    // when the drive is not mounted.
-    let path = if target.trim().len() == 2 && target.trim().ends_with(':') {
-        PathBuf::from(format!("{}\\", target.trim()))
-    } else {
-        path
-    };
-    std::fs::read_dir(&path).is_ok()
+    crate::stale::responds(target, crate::stale::LIVENESS_TIMEOUT)
 }
 
 /// The remotes already configured in rclone.

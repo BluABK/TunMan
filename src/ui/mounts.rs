@@ -161,7 +161,11 @@ fn header_cell(ui: &mut egui::Ui, key: C) {
         C::Name => ("Name", "Also the tag this mount's lines carry in the Log tab."),
         C::Via => ("Via", "rclone or sshfs."),
         C::Source => ("Source", "What is being mounted."),
-        C::At => ("At", "Drive letter or directory it appears at."),
+        C::At => (
+            "At",
+            "Drive letter or directory it appears at. If a previous run was killed or \
+             crashed and left this claimed, it is cleared before the next attempt.",
+        ),
         C::Uptime => (
             "Uptime",
             "How long it has been answering. A mount is only counted as up once its \

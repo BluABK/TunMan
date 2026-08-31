@@ -144,6 +144,14 @@ pub async fn run_mounts(
 ) {
     let mut running: HashMap<String, MountHandle> = HashMap::new();
 
+    // Anything left claimed from a previous run is cleared before the first
+    // attempt. A mount point that outlived its process fails every mount onto
+    // it until something removes it, and after a crash there is nothing else
+    // to do that.
+    for m in cfg.mounts.iter().filter(|m| m.enabled) {
+        clear_stale_point(&m.name, &m.target).await;
+    }
+
     for m in cfg.mounts.iter().filter(|m| m.enabled && m.auto_start) {
         start_mount(m, &cfg, &shared, &mut running).await;
     }
@@ -253,6 +261,19 @@ async fn stop_mount(
     });
 }
 
+/// Clear a mount point left behind by a crash, a kill, or a BSOD.
+///
+/// Blocking work — a dead mount point is read with a timeout, not instantly —
+/// so it goes to the blocking pool rather than stalling the supervisor.
+async fn clear_stale_point(name: &str, target: &str) {
+    let t = target.to_string();
+    let done =
+        tokio::task::spawn_blocking(move || crate::stale::clear_if_stale(&t)).await.unwrap_or(None);
+    if let Some(what) = done {
+        info!(mount = %name, "cleared a stale mount point: {what}");
+    }
+}
+
 struct MountTask {
     mount: Mount,
     rclone: String,
@@ -329,6 +350,13 @@ impl MountTask {
             return false;
         }
 
+        // The mount point has to be free before the tool is asked to use it:
+        // both rclone and sshfs refuse a path that already exists, and a
+        // leftover from a crash never frees itself. Doing this every attempt
+        // rather than once means a retry loop cannot spin forever against a
+        // mount point that one call would have cleared.
+        clear_stale_point(&name, &m.target).await;
+
         debug!(mount = %name, "{program} {}", args.join(" "));
         let mut cmd = tokio::process::Command::new(&program);
         cmd.args(&args)
@@ -402,10 +430,21 @@ impl MountTask {
             });
         } else {
             let note = last_line.lock().clone();
-            self.fail(
-                &name,
-                if note.is_empty() { "the mount point never answered" } else { &note },
-            );
+            // Name the cause when the tool's own words say the mount point was
+            // in the way — otherwise this reads as a server problem, which is
+            // the wrong thing to go and investigate.
+            let msg = if note.is_empty() {
+                "the mount point never answered".to_string()
+            } else if crate::stale::looks_occupied(&note) {
+                format!(
+                    "{note}\n\nThe mount point was still claimed. It is cleared before \
+                     every attempt, so this usually means something else is using {}.",
+                    m.target
+                )
+            } else {
+                note.clone()
+            };
+            self.fail(&name, &msg);
         }
 
         // Watch the process AND the mount point. A stale mount leaves the
@@ -450,11 +489,17 @@ impl MountTask {
         }
     }
 
+    /// Stop the mount tool, then tidy up after it.
+    ///
+    /// Killing a mount tool is exactly the case that leaves the mount point
+    /// claimed: it never gets to unmount. Clearing here is what keeps a
+    /// remount immediately afterwards from failing on our own leftovers.
     async fn kill(&self, child: &mut tokio::process::Child, pid: u32) {
         if pid != 0 {
             crate::platform::kill_process_tree(pid);
         }
         let _ = child.kill().await;
+        clear_stale_point(&self.mount.name, &self.mount.target).await;
     }
 
     fn fail(&self, name: &str, msg: &str) {

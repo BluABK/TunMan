@@ -223,6 +223,30 @@ than reconnect, so a fixed delay beats an eager backoff. Zero uses the same
 doubling backoff tunnels use (5 s to a 5-minute ceiling), and *give up after* N
 failures stops a permanently broken mount retrying forever.
 
+**A mount point outlives the process that made it.** A mount that ends cleanly
+releases its drive letter or directory; one that is killed, crashes, or is cut
+off by a BSOD does not. The letter stays claimed with nothing behind it, or the
+directory is left sitting there — and both rclone and sshfs refuse to mount onto
+a path that already exists. Nothing frees it on its own, so the mount retries
+forever against a mount point that will never come back, which looks exactly
+like a server problem and is not one.
+
+So the mount point is examined and cleared before every attempt, when TunMan
+starts, and again right after TunMan kills a mount tool — the case that causes
+it. What "cleared" means is deliberately narrow, because the risk here is
+removing something that is not a leftover:
+
+- A **drive letter** is only unclaimed when it does not answer *and* the device
+  behind it is a WinFsp mount or a network mapping. A letter pointing at a real
+  volume is never touched, answering or not: a failing disk must not have its
+  letter taken away by a tunnel manager.
+- A **directory** is only ever removed with `remove_dir`, which refuses any
+  directory that has contents. No path through this code can delete a file.
+
+Every probe is time-boxed, because a dead mount point does not fail when read —
+it hangs, for as long as the filesystem driver takes to give up. A supervisor
+waiting on one has stopped supervising.
+
 rclone mounts pick from the remotes already in your rclone config, so there is
 nothing to retype. **rclone's `sftp` backend does the same job as sshfs**, which
 matters on Windows: sshfs needs sshfs-win, a separate install, while an sftp

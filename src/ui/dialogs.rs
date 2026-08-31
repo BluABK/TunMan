@@ -473,8 +473,11 @@ pub fn show_mount_editor(app: &mut TunManApp, ctx: &egui::Context) {
                 }
 
                 ui.label("Mount at").on_hover_text(
-                    "A free drive letter like `X:`, or an empty directory. The letter must \
-                     not already be in use.",
+                    "A free drive letter like `X:`, or a directory that does not exist \
+                     yet.\n\nA mount point left claimed by a crash, a kill or a BSOD is \
+                     cleared automatically before each attempt — but only when it is \
+                     genuinely a leftover. A letter belonging to a real disk, or a \
+                     directory with anything in it, is never touched.",
                 );
                 ui.text_edit_singleline(&mut ed.draft.target);
                 ui.end_row();

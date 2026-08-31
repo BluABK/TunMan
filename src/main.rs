@@ -24,6 +24,7 @@ mod platform;
 mod sa_push;
 mod sampler;
 mod ssh;
+mod stale;
 mod supervisor;
 mod sync;
 mod traffic;
