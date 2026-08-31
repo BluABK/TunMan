@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::usage::Caps;
+
 /// The three forwarding modes, matching ssh's own flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -121,6 +123,14 @@ pub struct Tunnel {
     /// [`TunnelKind::meterable`].
     pub meter: bool,
 
+    /// Bandwidth limits. Only enforceable while [`Tunnel::metering`] is on —
+    /// without it there are no byte counts to measure against, and the UI says
+    /// so rather than showing a cap that quietly does nothing.
+    pub caps: Caps,
+    /// Country to display instead of the probed one. For a tunnel that cannot
+    /// be probed, or one whose provider geolocates somewhere misleading.
+    pub country_override: String,
+
     pub compression: bool,
     /// `ServerAliveInterval`. Zero disables the keepalive entirely, which is
     /// how a tunnel silently dies behind a NAT that drops idle flows.
@@ -147,6 +157,8 @@ impl Default for Tunnel {
             identity_file: String::new(),
             password: String::new(),
             meter: false,
+            caps: Caps::default(),
+            country_override: String::new(),
             compression: false,
             // 30s/3 detects a dead peer in ~90s. Long enough not to churn on a
             // brief hiccup, short enough that a wedged tunnel doesn't sit there
@@ -186,6 +198,21 @@ impl Tunnel {
         self.meter && self.kind.meterable()
     }
 
+    /// Whether this tunnel's caps can actually be enforced.
+    ///
+    /// A cap needs byte counts, and byte counts need metering. A cap set on an
+    /// unmetered tunnel is not a weak limit, it is *no* limit — so the UI warns
+    /// instead of implying protection that does not exist.
+    pub fn caps_enforceable(&self) -> bool {
+        self.metering()
+    }
+
+    /// Whether the tunnel can be probed for exit address, country and latency.
+    /// Only a SOCKS proxy can carry the request that answers those.
+    pub fn probeable(&self) -> bool {
+        self.kind == TunnelKind::Socks
+    }
+
     /// Problems that would stop this tunnel from starting, in the order a user
     /// would want to fix them. Empty means startable.
     pub fn validate(&self) -> Vec<String> {
@@ -212,6 +239,13 @@ impl Tunnel {
         }
         if self.auth == AuthMode::Password && self.password.is_empty() {
             errs.push("Password auth is selected but no password is set.".into());
+        }
+        if self.caps.any_set() && !self.caps_enforceable() {
+            errs.push(
+                "Bandwidth caps need metering, which this tunnel does not have — \
+                 they would not be enforced."
+                    .into(),
+            );
         }
         errs
     }
@@ -291,6 +325,33 @@ mod tests {
 
         let t = Tunnel { auth: AuthMode::Password, password: String::new(), ..socks() };
         assert_eq!(t.validate().len(), 1);
+    }
+
+    /// A cap without metering is not a loose limit, it is no limit at all —
+    /// there are no byte counts to measure against. Saying so is the whole
+    /// point; a cap that silently does nothing is worse than no cap.
+    #[test]
+    fn caps_need_metering_to_mean_anything() {
+        let t = Tunnel { meter: true, ..socks() };
+        assert!(t.caps_enforceable());
+
+        let t = Tunnel { meter: false, ..socks() };
+        assert!(!t.caps_enforceable());
+
+        let capped = Tunnel {
+            meter: false,
+            caps: crate::usage::Caps { monthly_mib: 100, ..Default::default() },
+            ..socks()
+        };
+        assert_eq!(capped.validate().len(), 1, "and validation says so");
+    }
+
+    /// Only a SOCKS tunnel can carry the request that reports its own exit.
+    #[test]
+    fn only_a_socks_tunnel_can_be_probed() {
+        assert!(socks().probeable());
+        assert!(!Tunnel { kind: TunnelKind::Local, ..socks() }.probeable());
+        assert!(!Tunnel { kind: TunnelKind::Remote, ..socks() }.probeable());
     }
 
     #[test]

@@ -9,6 +9,7 @@
 
 mod app_paths;
 mod config;
+mod geo;
 mod log_capture;
 mod logfmt;
 mod meter;
@@ -20,6 +21,7 @@ mod ssh;
 mod supervisor;
 mod traffic;
 mod ui;
+mod usage;
 mod util;
 
 use std::sync::Arc;
@@ -98,7 +100,7 @@ fn main() -> Result<()> {
         let cfg = cfg.clone();
         rt.spawn(async move { supervisor::run(cfg, shared, cmd_rx).await });
     }
-    sampler::start(shared.clone());
+    sampler::start(shared.clone(), cmd_tx.clone());
 
     let opts = eframe::NativeOptions {
         persistence_path: Some(app_paths::data_dir().join("window.ron")),
@@ -141,6 +143,10 @@ fn main() -> Result<()> {
             )))
         }),
     );
+
+    // The last minute of usage is only in memory; without this a cap would
+    // quietly forget it across every restart.
+    sampler::flush_usage();
 
     // Dropping the runtime drops every child with it — they are spawned
     // kill_on_drop, so nothing is left holding a port.

@@ -13,12 +13,12 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::traffic::{ConnEntry, TunnelTraffic};
 
@@ -116,12 +116,14 @@ pub async fn run_listener(
     bind: SocketAddr,
     upstream: SocketAddr,
     traffic: Arc<TunnelTraffic>,
+    blocked: Arc<AtomicBool>,
     sniff_socks: bool,
     fixed_dest: String,
     tunnel: String,
 ) -> Result<()> {
     let listener = TcpListener::bind(bind).await?;
     debug!(tunnel = %tunnel, %bind, %upstream, "metering listener up");
+    let mut refusing = false;
     loop {
         let (client, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -130,6 +132,23 @@ pub async fn run_listener(
                 continue;
             }
         };
+
+        // Over a cap that refuses new work: accept and close at once rather
+        // than leaving the connection unaccepted. A client gets an immediate,
+        // ordinary "connection closed" instead of hanging in the backlog
+        // waiting for a listener that is deliberately ignoring it.
+        if blocked.load(Ordering::Relaxed) {
+            if !refusing {
+                refusing = true;
+                warn!(tunnel = %tunnel, "over its bandwidth cap — refusing new connections");
+            }
+            drop(client);
+            continue;
+        }
+        if refusing {
+            refusing = false;
+            info!(tunnel = %tunnel, "back under its cap — accepting connections again");
+        }
         let traffic = traffic.clone();
         let dest = fixed_dest.clone();
         let tunnel = tunnel.clone();
@@ -390,9 +409,12 @@ mod tests {
 
         let traffic = Arc::new(TunnelTraffic::default());
         let t = traffic.clone();
+        let blocked = Arc::new(AtomicBool::new(false));
+        let b = blocked.clone();
         let listener = tokio::spawn(async move {
-            let _ = run_listener(front_addr, upstream_addr, t, true, String::new(), "test".into())
-                .await;
+            let _ =
+                run_listener(front_addr, upstream_addr, t, b, true, String::new(), "test".into())
+                    .await;
         });
 
         // Retry the real client rather than probing first: a throwaway probe
@@ -447,6 +469,28 @@ mod tests {
         assert_eq!(rows[0].live, 0, "no longer live");
         assert_eq!(rows[0].total_conns, 1);
         assert_eq!(rows[0].out_bytes, request.len() as u64, "its bytes survived the close");
+
+        // Over a cap, new connections are refused — accepted and closed at
+        // once, so a client sees an ordinary closed connection rather than
+        // hanging in a backlog nobody is reading.
+        blocked.store(true, Ordering::Relaxed);
+        let mut refused = TcpStream::connect(front_addr).await.expect("the port stays bound");
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), refused.read(&mut buf))
+            .await
+            .expect("a refused connection must close promptly, not hang")
+            .unwrap_or(0);
+        assert_eq!(n, 0, "refused connections are closed, not served");
+
+        // And it recovers on its own when the window rolls over.
+        blocked.store(false, Ordering::Relaxed);
+        let mut allowed = TcpStream::connect(front_addr).await.unwrap();
+        allowed.write_all(&request).await.unwrap();
+        let mut back = vec![0u8; request.len() * 2];
+        tokio::time::timeout(std::time::Duration::from_secs(5), allowed.read_exact(&mut back))
+            .await
+            .expect("should be served again")
+            .expect("should be served again");
 
         listener.abort();
     }

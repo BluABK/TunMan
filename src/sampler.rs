@@ -10,7 +10,8 @@ use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 
-use crate::supervisor::Shared;
+use crate::supervisor::{Command, Shared, Status};
+use crate::usage::{CapAction, Ledger};
 
 /// 30 minutes at one sample a second — enough to see a tunnel's shape over a
 /// session without keeping an unbounded history.
@@ -61,22 +62,50 @@ pub fn rate(prev: Option<u64>, now: u64, elapsed_secs: f64) -> f64 {
     (now - prev) as f64 / elapsed_secs
 }
 
+/// The live usage ledger, shared by the sampler (which writes it) and the UI
+/// (which reads it and forgets deleted tunnels).
+static LEDGER: OnceLock<Mutex<Ledger>> = OnceLock::new();
+
+fn ledger() -> &'static Mutex<Ledger> {
+    LEDGER.get_or_init(|| {
+        Mutex::new(Ledger::load(&crate::app_paths::usage_path()).unwrap_or_default())
+    })
+}
+
+/// Drop a deleted tunnel's usage history, so the file does not accumulate
+/// entries under names nothing refers to any more.
+pub fn forget_tunnel(name: &str) {
+    ledger().lock().forget(name);
+    let _ = ledger().lock().save(&crate::app_paths::usage_path());
+}
+
+/// Persist usage now — on the way out, so the last few minutes are not lost.
+pub fn flush_usage() {
+    let _ = ledger().lock().save(&crate::app_paths::usage_path());
+}
+
+/// How often the ledger is written. Every tick would be a file write a second
+/// for numbers that only matter to the minute; a minute of loss on a hard kill
+/// is an acceptable trade against that.
+const SAVE_EVERY_TICKS: u32 = 60;
+
 /// Start the sampler. Idempotent — a second call does nothing.
-pub fn start(shared: Arc<Shared>) {
+pub fn start(shared: Arc<Shared>, commands: tokio::sync::mpsc::Sender<Command>) {
     static STARTED: OnceLock<()> = OnceLock::new();
     if STARTED.set(()).is_err() {
         return;
     }
     std::thread::Builder::new()
         .name("sampler".into())
-        .spawn(move || sampler_loop(shared))
+        .spawn(move || sampler_loop(shared, commands))
         .expect("spawn sampler");
 }
 
-fn sampler_loop(shared: Arc<Shared>) {
+fn sampler_loop(shared: Arc<Shared>, commands: tokio::sync::mpsc::Sender<Command>) {
     let mut prev: HashMap<String, (u64, u64)> = HashMap::new();
     let mut last_tick = std::time::Instant::now();
     let self_pid = std::process::id();
+    let mut ticks: u32 = 0;
 
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -94,6 +123,8 @@ fn sampler_loop(shared: Arc<Shared>) {
 
         let states: Vec<_> = shared.states.lock().values().cloned().collect();
         let mut rates = HashMap::new();
+        let now = crate::util::now_unix();
+        ticks = ticks.wrapping_add(1);
 
         for st in states {
             // TunMan holds both ends of the loopback pair when metering, and
@@ -121,7 +152,56 @@ fn sampler_loop(shared: Arc<Shared>) {
                     rate(last.map(|(_, o)| o), now_out, elapsed),
                 ),
             );
+
+            // Bank the delta against the caps. Same first-sight rule as the
+            // rates: a tunnel seen for the first time contributes nothing, or
+            // a restart would charge its whole previous lifetime to this hour.
+            if let Some((pi, po)) = last {
+                let mut led = ledger().lock();
+                led.add(&st.name, now, now_in.saturating_sub(pi), now_out.saturating_sub(po));
+            }
             prev.insert(st.name.clone(), (now_in, now_out));
+
+            let status = crate::usage::status(&ledger().lock(), &st.name, &st.cap_config, now);
+            let over = status.exceeded.is_some();
+            let action = st.cap_config.action;
+            let was_over = st.caps.exceeded.is_some();
+            let up = st.status == Status::Up;
+
+            shared.update(&st.name, |s| {
+                s.caps = status;
+                s.tick_availability(up);
+                // Recomputed every tick rather than latched, so a rolling
+                // window that has moved on lifts the block on its own.
+                s.blocked.store(over && action == CapAction::BlockNew, Ordering::Relaxed);
+            });
+
+            if over && !was_over {
+                tracing::warn!(
+                    tunnel = %st.name,
+                    action = action.label(),
+                    "bandwidth cap reached"
+                );
+            }
+
+            if action == CapAction::Stop {
+                if over && !st.stopped_by_cap && up {
+                    shared.update(&st.name, |s| s.stopped_by_cap = true);
+                    let _ = commands.try_send(Command::Stop(st.name.clone()));
+                } else if !over && st.stopped_by_cap {
+                    // The window rolled over; bring it back rather than
+                    // leaving it down until someone notices.
+                    tracing::info!(tunnel = %st.name, "back under its cap — restarting");
+                    shared.update(&st.name, |s| s.stopped_by_cap = false);
+                    let _ = commands.try_send(Command::Start(st.name.clone()));
+                }
+            }
+        }
+
+        if ticks % SAVE_EVERY_TICKS == 0 {
+            let mut led = ledger().lock();
+            led.prune(now);
+            let _ = led.save(&crate::app_paths::usage_path());
         }
 
         let mut ring = history_ring().lock();

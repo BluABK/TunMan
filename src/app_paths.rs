@@ -25,6 +25,12 @@ pub fn config_path() -> PathBuf {
     data_dir().join("TunMan.toml")
 }
 
+/// The bandwidth ledger. JSON rather than TOML: it is machine-written,
+/// rewritten often, and nobody hand-edits a table of hourly byte counts.
+pub fn usage_path() -> PathBuf {
+    data_dir().join("usage.json")
+}
+
 pub fn logs_dir() -> PathBuf {
     data_dir().join("logs")
 }

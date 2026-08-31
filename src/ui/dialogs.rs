@@ -190,6 +190,84 @@ pub fn show_editor(app: &mut TunManApp, ctx: &egui::Context) {
                 });
                 ui.end_row();
 
+                ui.separator();
+                ui.end_row();
+
+                let enforceable = ed.draft.caps_enforceable();
+                ui.label("Bandwidth caps").on_hover_text(
+                    "Limits in MiB, to keep a box off its provider's bad side. Zero means \
+                     no cap. Caps need metering to be enforceable — without it there are no \
+                     byte counts to measure against.",
+                );
+                ui.vertical(|ui| {
+                    if ed.draft.caps.any_set() && !enforceable {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            "⚠ Not enforced — this tunnel is not metered.",
+                        )
+                        .on_hover_text(
+                            "Windows has no per-socket byte counter, so a cap is only \
+                             possible when TunMan owns the port and counts what passes \
+                             through it. Tick Meter traffic above.",
+                        );
+                    }
+                    for w in crate::usage::Window::ALL {
+                        ui.horizontal(|ui| {
+                            let field = match w {
+                                crate::usage::Window::Hour => &mut ed.draft.caps.hourly_mib,
+                                crate::usage::Window::Week => &mut ed.draft.caps.weekly_mib,
+                                crate::usage::Window::Month => &mut ed.draft.caps.monthly_mib,
+                            };
+                            ui.add(
+                                egui::DragValue::new(field)
+                                    .speed(64.0)
+                                    .range(0..=u64::MAX)
+                                    .suffix(" MiB"),
+                            );
+                            ui.label(w.label()).on_hover_text(w.hint());
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("At the cap");
+                        egui::ComboBox::from_id_salt("cap_action")
+                            .selected_text(ed.draft.caps.action.label())
+                            .show_ui(ui, |ui| {
+                                for a in crate::usage::CapAction::ALL {
+                                    ui.selectable_value(&mut ed.draft.caps.action, a, a.label())
+                                        .on_hover_text(a.hint());
+                                }
+                            })
+                            .response
+                            .on_hover_text(ed.draft.caps.action.hint());
+                    });
+                    ui.checkbox(&mut ed.draft.caps.count_both_directions, "Count both directions")
+                        .on_hover_text(
+                            "Off counts only what leaves, which is what most providers bill. \
+                             On counts everything through the tunnel.",
+                        );
+                });
+                ui.end_row();
+
+                ui.label("Country").on_hover_text(
+                    "Normally measured by asking through the tunnel where it comes out. Set \
+                     a two-letter code here to override that — for a tunnel that cannot be \
+                     probed, or one whose provider geolocates somewhere misleading.",
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut ed.draft.country_override)
+                            .hint_text("auto")
+                            .desired_width(60.0),
+                    );
+                    if !ed.draft.country_override.trim().is_empty() {
+                        ui.label(crate::geo::flag(&ed.draft.country_override));
+                    }
+                });
+                ui.end_row();
+
+                ui.separator();
+                ui.end_row();
+
                 ui.label("Keepalive").on_hover_text(
                     "Seconds between keepalives. Zero turns them off, which is how a tunnel \
                      silently dies behind a NAT that drops idle connections.",

@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -27,6 +28,7 @@ use crate::config::Config;
 use crate::model::{AuthMode, Tunnel, TunnelKind};
 use crate::ssh::Bind;
 use crate::traffic::TunnelTraffic;
+use crate::usage::CapStatus;
 use crate::util::{now_unix, retry_delay_secs};
 
 /// How long a tunnel must stay up before its failure streak is forgiven. A
@@ -100,7 +102,80 @@ pub struct TunnelState {
     /// Last probe result, when probing is enabled.
     pub probe_ok: Option<bool>,
     pub probe_note: String,
+
+    /// The ssh server's own address, from a local DNS lookup. Answers "which
+    /// box am I connecting to", which is a different question from where the
+    /// tunnel comes out.
+    pub server_ip: String,
+    /// The address the far side presents, measured through the tunnel.
+    pub exit_ip: String,
+    /// ISO country of the exit, or a manual override.
+    pub country: String,
+    /// Most recent probe round trip.
+    pub latency_ms: u64,
+    /// Mean of the last [`LATENCY_SAMPLES`] probes — one slow probe on a busy
+    /// link is noise; a raised average is the tunnel actually being slow.
+    pub latency_avg_ms: u64,
+    latency_history: Vec<u64>,
+
+    /// Seconds observed while up, and seconds observed at all, since this
+    /// tunnel first started. Their ratio is the availability figure.
+    pub up_secs: u64,
+    pub tracked_secs: u64,
+
+    /// The caps this tunnel was started with, so the sampler can evaluate them
+    /// without needing the config.
+    pub cap_config: crate::usage::Caps,
+    /// Usage against caps, recomputed each tick.
+    pub caps: CapStatus,
+    /// Set when the tunnel was stopped *by* a cap rather than by a person, so
+    /// it can be brought back on its own once the window rolls over.
+    pub stopped_by_cap: bool,
+    /// Set when a cap has been reached and the action is to refuse new work.
+    /// The metering listener reads this directly.
+    pub blocked: Arc<AtomicBool>,
+
     pub traffic: Arc<TunnelTraffic>,
+}
+
+/// How many probe round trips the rolling average covers.
+const LATENCY_SAMPLES: usize = 10;
+
+impl TunnelState {
+    /// Fold in a probe result.
+    pub fn note_latency(&mut self, ms: u64) {
+        self.latency_ms = ms;
+        self.latency_history.push(ms);
+        if self.latency_history.len() > LATENCY_SAMPLES {
+            self.latency_history.remove(0);
+        }
+        let n = self.latency_history.len() as u64;
+        self.latency_avg_ms = if n == 0 { 0 } else { self.latency_history.iter().sum::<u64>() / n };
+    }
+
+    /// Fraction of observed time this tunnel has been up, or `None` before
+    /// anything has been observed — zero would read as "never up", which is a
+    /// different and much worse claim than "no data yet".
+    pub fn availability(&self) -> Option<f32> {
+        if self.tracked_secs == 0 {
+            return None;
+        }
+        Some(self.up_secs as f32 / self.tracked_secs as f32)
+    }
+
+    /// The tightest cap as a fraction of its limit, for the single-number
+    /// readout on the row.
+    pub fn caps_worst(&self) -> f32 {
+        self.caps.worst_fraction()
+    }
+
+    /// Account for one observed second.
+    pub fn tick_availability(&mut self, up: bool) {
+        self.tracked_secs += 1;
+        if up {
+            self.up_secs += 1;
+        }
+    }
 }
 
 impl TunnelState {
@@ -119,6 +194,18 @@ impl TunnelState {
             metering,
             probe_ok: None,
             probe_note: String::new(),
+            server_ip: String::new(),
+            exit_ip: String::new(),
+            country: String::new(),
+            latency_ms: 0,
+            latency_avg_ms: 0,
+            latency_history: Vec::new(),
+            up_secs: 0,
+            tracked_secs: 0,
+            cap_config: crate::usage::Caps::default(),
+            caps: CapStatus::default(),
+            stopped_by_cap: false,
+            blocked: Arc::new(AtomicBool::new(false)),
             traffic: Arc::new(TunnelTraffic::default()),
         }
     }
@@ -151,7 +238,7 @@ impl Shared {
             .collect()
     }
 
-    fn update(&self, name: &str, f: impl FnOnce(&mut TunnelState)) {
+    pub fn update(&self, name: &str, f: impl FnOnce(&mut TunnelState)) {
         if let Some(s) = self.states.lock().get_mut(name) {
             f(s);
         }
@@ -268,9 +355,26 @@ async fn start(
         s.advertised = advertised;
         s.port = t.port;
         s.metering = t.metering();
+        s.cap_config = t.caps;
         s.status = Status::Starting;
+        s.stopped_by_cap = false;
         s.last_error.clear();
+        if !t.country_override.trim().is_empty() {
+            s.country = t.country_override.clone();
+        }
     });
+
+    // Local DNS, off the runtime thread: `to_socket_addrs` blocks, and a slow
+    // resolver would otherwise stall every other tunnel starting alongside it.
+    {
+        let (name, host, port) = (t.name.clone(), t.host.clone(), t.ssh_port);
+        let shared = shared.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(ip) = crate::geo::resolve_host(&host, port) {
+                shared.update(&name, |s| s.server_ip = ip);
+            }
+        });
+    }
 
     let (stop_tx, stop_rx) = mpsc::channel(1);
     running.insert(t.name.clone(), RunHandle { stop: stop_tx, def: t.clone() });
@@ -462,8 +566,13 @@ impl TunnelTask {
                 }
             };
             let upstream: SocketAddr = format!("127.0.0.1:{}", bind.port).parse().expect("literal");
-            let traffic =
-                self.shared.states.lock().get(&name).map(|s| s.traffic.clone()).unwrap_or_default();
+            let (traffic, blocked) = self
+                .shared
+                .states
+                .lock()
+                .get(&name)
+                .map(|s| (s.traffic.clone(), s.blocked.clone()))
+                .unwrap_or_else(|| (Default::default(), Arc::new(AtomicBool::new(false))));
             let fixed = format!("{}:{}", t.dest_host, t.dest_port);
             let sniff = t.kind == TunnelKind::Socks;
             let n = name.clone();
@@ -472,6 +581,7 @@ impl TunnelTask {
                     advertised,
                     upstream,
                     traffic,
+                    blocked,
                     sniff,
                     fixed,
                     n.clone(),
@@ -485,23 +595,21 @@ impl TunnelTask {
             None
         };
 
+        // The probe answers three questions with one request: is the tunnel
+        // actually carrying traffic, where does it come out, and how slow is it.
         let probe_task = match (&self.probe, ready) {
-            (Some((target, every)), true) if t.kind == TunnelKind::Socks => {
+            (Some((target, every)), true) if t.probeable() => {
                 let (target, every) = (target.clone(), *every);
                 let addr = format!("{}:{}", t.bind, t.port);
                 let shared = self.shared.clone();
                 let n = name.clone();
+                let override_country = t.country_override.clone();
                 Some(tokio::spawn(async move {
+                    // Probe once straight away so the columns fill in on start
+                    // rather than after a whole interval of blanks.
                     loop {
+                        run_probe(&shared, &n, &addr, &target, &override_country).await;
                         tokio::time::sleep(Duration::from_secs(every)).await;
-                        let (ok, note) = probe_socks(&addr, &target).await;
-                        if !ok {
-                            warn!(tunnel = %n, "probe failed: {note}");
-                        }
-                        shared.update(&n, |s| {
-                            s.probe_ok = Some(ok);
-                            s.probe_note = note.clone();
-                        });
                     }
                 }))
             }
@@ -629,6 +737,57 @@ async fn wait_until_ready(
             return Ready::TimedOut;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// One probe: exit address and country if the request completes, a plain
+/// reachability check otherwise.
+///
+/// The geo lookup is the better signal — it proves a full request went out and
+/// came back, not merely that the proxy accepted a CONNECT. But a tunnel behind
+/// a proxy that blocks the trace host is still a working tunnel, so a failed
+/// geo lookup falls back to the CONNECT check rather than reporting the tunnel
+/// down.
+async fn run_probe(
+    shared: &Arc<Shared>,
+    name: &str,
+    proxy: &str,
+    target: &str,
+    override_country: &str,
+) {
+    match crate::geo::probe_exit(proxy, Duration::from_secs(20)).await {
+        Ok(exit) => {
+            debug!(tunnel = %name, ip = %exit.ip, country = %exit.country, ms = exit.latency_ms,
+                   "probe");
+            let country = if override_country.trim().is_empty() {
+                exit.country
+            } else {
+                override_country.to_string()
+            };
+            shared.update(name, |s| {
+                s.probe_ok = Some(true);
+                s.probe_note = format!("exits at {} ({})", exit.ip, country);
+                s.exit_ip = exit.ip.clone();
+                s.country = country;
+                s.note_latency(exit.latency_ms);
+            });
+        }
+        Err(e) => {
+            let (ok, note) = probe_socks(proxy, target).await;
+            if ok {
+                warn!(tunnel = %name, "reachable, but the geo lookup failed: {e}");
+            } else {
+                warn!(tunnel = %name, "probe failed: {note}");
+            }
+            let note = if ok { format!("reachable; no exit info ({e})") } else { note };
+            shared.update(name, |s| {
+                s.probe_ok = Some(ok);
+                s.probe_note = note.clone();
+                if !ok {
+                    s.exit_ip.clear();
+                }
+            });
+        }
     }
 }
 
