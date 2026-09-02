@@ -144,10 +144,6 @@ fn main() -> Result<()> {
     }
     sampler::start(shared.clone(), cmd_tx.clone());
 
-    // The UI needs somewhere to run its own small async work — fetching a
-    // country flag once, and nothing else — and it is not itself on the runtime.
-    let rt_handle = rt.handle().clone();
-
     let opts = eframe::NativeOptions {
         persistence_path: Some(app_paths::data_dir().join("window.ron")),
         viewport: egui::ViewportBuilder::default()
@@ -182,7 +178,6 @@ fn main() -> Result<()> {
                 })
                 .ok();
             Ok(Box::new(ui::TunManApp::new(
-                rt_handle.clone(),
                 shared,
                 mount_shared,
                 sync_shared,

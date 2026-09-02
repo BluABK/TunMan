@@ -290,8 +290,8 @@ fn header_cell(ui: &mut egui::Ui, key: C) {
             "Country of the tunnel's EXIT, measured by asking through the tunnel itself \
              rather than by looking up the server's address. Set a manual override when \
              editing a tunnel if the provider geolocates somewhere misleading.\n\nThe flag \
-             image is fetched once per country and cached; a country whose flag could \
-             not be fetched shows its two-letter code instead.",
+             images are built into the app, so they need no network; a code with no \
+             flag shows as its two letters.",
         ),
         C::Server => (
             "Server",
@@ -427,9 +427,13 @@ fn cell(
                     // beside it, so a row of them lines up whatever shape
                     // the individual flags are.
                     Some(tex) => {
+                        // Bounded, not resized to a fixed shape: flags have
+                        // their own aspect ratios (Qatar is 11:28, Switzerland
+                        // is square) and stretching them all into one rectangle
+                        // would draw the wrong flag.
                         ui.add(
                             egui::Image::new(tex)
-                                .fit_to_exact_size(egui::vec2(18.0, 13.5))
+                                .max_size(egui::vec2(26.0, 14.0))
                                 .corner_radius(1.0),
                         )
                         .on_hover_text(hover);
@@ -654,13 +658,13 @@ A tunnel that has just                      started is always a second or two sh
     }
 }
 
-/// Make sure every country currently on screen has its flag fetched and
-/// uploaded, exactly once each.
+/// Upload the flag of every country currently on screen, once each.
 ///
 /// Called from the table because that is what knows which countries are on
-/// screen, but it does no work in the common case: a code already in the
-/// texture map is skipped, and a code with no file yet starts one background
-/// fetch and is skipped on every frame until that lands.
+/// screen, and it does nothing in the common case: a code already in the
+/// texture map is skipped, and the images themselves are compiled in, so this
+/// is a decode and an upload the first time a country appears and nothing
+/// after that.
 fn load_flags(app: &mut TunManApp, ctx: &egui::Context) {
     let wanted: Vec<String> = app
         .rows
@@ -669,18 +673,11 @@ fn load_flags(app: &mut TunManApp, ctx: &egui::Context) {
         .filter(|cc| !app.flag_textures.contains_key(cc))
         .collect();
     for cc in wanted {
-        match crate::flags::cached(&cc) {
-            Some(png) => {
-                if let Some(img) = crate::flags::decode(&png) {
-                    let tex =
-                        ctx.load_texture(format!("flag:{cc}"), img, egui::TextureOptions::LINEAR);
-                    app.flag_textures.insert(cc, tex);
-                }
-                // A file that will not decode is left alone rather than
-                // retried every frame; the row shows the code instead.
-            }
-            None => crate::flags::ensure(&cc, &app.rt),
-        }
+        let Some(img) = crate::flags::png(&cc).and_then(crate::flags::decode) else {
+            continue; // no flag for that code; the row shows the letters
+        };
+        let tex = ctx.load_texture(format!("flag:{cc}"), img, egui::TextureOptions::LINEAR);
+        app.flag_textures.insert(cc, tex);
     }
 }
 

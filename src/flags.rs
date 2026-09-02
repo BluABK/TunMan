@@ -2,109 +2,37 @@
 //!
 //! The obvious way to draw a flag is the regional-indicator emoji pair, and on
 //! Windows it does not work: the platform's emoji font has no flag glyphs at
-//! all, so 🇩🇪 renders as the letters D and E in boxes. egui's own bundled emoji
-//! font is monochrome, which cannot help either. A flag has to be a picture.
+//! all, so a flag emoji renders as two letters in boxes. egui's own bundled
+//! emoji font is monochrome, which cannot help either. A flag has to be a
+//! picture.
 //!
-//! Shipping ~250 of them is a lot of bytes for a table that will ever show two
-//! or three, so they are fetched on demand from [flagcdn.com] — one small PNG
-//! per country, the first time that country is seen — and kept in
-//! `%APPDATA%\TunMan\flags`. After that it is a local file read, offline
-//! included. Nothing else about the app depends on this: a fetch that fails
-//! leaves the row showing the two-letter code, which is what it showed before.
+//! All 252 of them are compiled into the binary from `assets/flags/` — 74 KiB
+//! for the set, at 40 px wide, which is nothing next to depending on a website
+//! being reachable. That matters more here than in most apps: this one manages
+//! network plumbing, so the times someone is staring at its table are
+//! disproportionately the times the network is broken.
 //!
-//! What leaves the machine is one request naming a country code, to a CDN, once
-//! per country ever seen. It does not say which tunnel, and it does not repeat.
-//!
-//! [flagcdn.com]: https://flagcdn.com
+//! The images are flat rectangles rather than the waving variety, and come from
+//! [flagpedia](https://flagpedia.net), rendered from Wikimedia Commons vectors
+//! and in the public domain.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::LazyLock;
+include!(concat!(env!("OUT_DIR"), "/flags_table.rs"));
 
-use parking_lot::Mutex;
-
-/// Width to fetch. Twice the ~20px the table draws, so the image still looks
-/// like a flag rather than a smear on a high-DPI display.
-const FETCH_WIDTH: u32 = 40;
-
-/// Codes already being fetched, so a repainting UI asks once rather than sixty
-/// times a second.
-static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-
-/// Where the fetched PNGs live.
-pub fn cache_dir() -> PathBuf {
-    crate::app_paths::data_dir().join("flags")
-}
-
-/// The two-letter code in the form used for lookups, or `None` when it is not
-/// a country code at all.
+/// The two-letter code in the form the table is keyed by, or `None` when it is
+/// not a country code at all.
 ///
-/// Everything else here is built from this, and it is why the code can be
-/// pasted into a URL and a file path without further thought: two ASCII
-/// letters, lowercased. `XX` is the "unknown" the geo probe returns.
+/// `XX` is the "unknown" the geo probe returns when Cloudflare gives no `loc`.
 pub fn normalise(country: &str) -> Option<String> {
     let c = country.trim().to_ascii_lowercase();
     let ok = c.len() == 2 && c.bytes().all(|b| b.is_ascii_lowercase()) && c != "xx";
     ok.then_some(c)
 }
 
-/// Where a country's flag is cached.
-pub fn cache_path(cc: &str) -> Option<PathBuf> {
-    Some(cache_dir().join(format!("{}.png", normalise(cc)?)))
-}
-
-/// The CDN URL for a country's flag.
-pub fn url(cc: &str) -> Option<String> {
-    Some(format!("https://flagcdn.com/w{FETCH_WIDTH}/{}.png", normalise(cc)?))
-}
-
-/// The cached PNG for a country, if it has been fetched.
-pub fn cached(cc: &str) -> Option<Vec<u8>> {
-    std::fs::read(cache_path(cc)?).ok()
-}
-
-/// Fetch a flag if it is not cached yet. Returns immediately; the image appears
-/// on a later frame.
-///
-/// Silent on failure by design. A missing flag is a cosmetic gap next to a row
-/// that still says which country it is, and an app that made noise about the
-/// flag CDN being unreachable would be reporting on itself rather than on the
-/// tunnels.
-pub fn ensure(cc: &str, rt: &tokio::runtime::Handle) {
-    let Some(cc) = normalise(cc) else { return };
-    let Some(path) = cache_path(&cc) else { return };
-    if path.exists() || !IN_FLIGHT.lock().insert(cc.clone()) {
-        return;
-    }
-    let Some(url) = url(&cc) else { return };
-    rt.spawn(async move {
-        let fetched = fetch(&url).await;
-        match fetched {
-            Ok(bytes) if !bytes.is_empty() => {
-                if let Some(dir) = path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                if let Err(e) = std::fs::write(&path, &bytes) {
-                    tracing::debug!("could not cache the {cc} flag: {e}");
-                }
-            }
-            Ok(_) => tracing::debug!("the {cc} flag came back empty"),
-            Err(e) => tracing::debug!("could not fetch the {cc} flag: {e}"),
-        }
-        IN_FLIGHT.lock().remove(&cc);
-    });
-}
-
-async fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
-    // Direct, not through a tunnel: this is a picture of a flag from a CDN, and
-    // routing it through someone's VPS would spend their bandwidth to hide
-    // nothing. Short timeout — it is decoration.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent(concat!("TunMan/", env!("CARGO_PKG_VERSION")))
-        .build()?;
-    let resp = client.get(url).send().await?.error_for_status()?;
-    Ok(resp.bytes().await?.to_vec())
+/// The bundled PNG for a country, if there is one.
+pub fn png(country: &str) -> Option<&'static [u8]> {
+    let cc = normalise(country)?;
+    let i = FLAGS.binary_search_by(|(code, _)| (*code).cmp(cc.as_str())).ok()?;
+    Some(FLAGS[i].1)
 }
 
 /// Decode a PNG into something egui can upload.
@@ -170,16 +98,47 @@ mod tests {
         assert_eq!(normalise("d3"), None);
     }
 
-    /// The code goes into a URL and a file path, so anything that is not two
-    /// letters has to be rejected before it gets there — not sanitised after.
+    /// The set is complete enough to be worth bundling, and keyed the way the
+    /// lookup expects.
     #[test]
-    fn nothing_but_a_country_code_reaches_a_url_or_a_path() {
-        for bad in ["../etc", "a/b", "..", "%2e%2e", "de/../../x", "\\\\server\\share"] {
-            assert_eq!(url(bad), None, "url for {bad:?}");
-            assert_eq!(cache_path(bad), None, "path for {bad:?}");
+    fn every_bundled_flag_is_a_lowercase_two_letter_code() {
+        assert!(FLAGS.len() > 200, "only {} flags bundled", FLAGS.len());
+        for (cc, bytes) in FLAGS {
+            assert_eq!(cc.len(), 2, "not a country code: {cc}");
+            assert!(cc.bytes().all(|b| b.is_ascii_lowercase()), "not lowercase: {cc}");
+            assert!(!bytes.is_empty(), "{cc} is empty");
+            assert_eq!(&bytes[..4], b"\x89PNG", "{cc} is not a PNG");
         }
-        assert_eq!(url("DE").as_deref(), Some("https://flagcdn.com/w40/de.png"));
-        assert!(cache_path("DE").unwrap().ends_with("de.png"));
+    }
+
+    /// The lookup is a binary search, so the table has to be sorted — and a
+    /// table that is not would fail by quietly missing flags, not by erroring.
+    #[test]
+    fn the_table_is_sorted() {
+        assert!(FLAGS.windows(2).all(|w| w[0].0 < w[1].0), "the flag table is out of order");
+    }
+
+    #[test]
+    fn a_country_code_finds_its_flag() {
+        for cc in ["se", "NO", " de ", "nl", "us", "jp"] {
+            assert!(png(cc).is_some(), "no flag for {cc}");
+        }
+        for missing in ["XX", "", "Norway", "zz"] {
+            assert!(png(missing).is_none(), "unexpected flag for {missing:?}");
+        }
+    }
+
+    /// Every bundled flag has to survive the decoder, not just the ones that
+    /// happen to be looked at. They are palette PNGs at four different bit
+    /// depths, and a decoder gap shows up as an image that silently never
+    /// appears.
+    #[test]
+    fn every_bundled_flag_decodes() {
+        for (cc, bytes) in FLAGS {
+            let img = decode(bytes).unwrap_or_else(|| panic!("{cc} does not decode"));
+            assert!(img.size[0] > 0 && img.size[1] > 0, "{cc} decoded to nothing");
+            assert_eq!(img.pixels.len(), img.size[0] * img.size[1], "{cc} pixel count");
+        }
     }
 
     /// Round-trip a real PNG, since the whole feature is "this file becomes

@@ -134,14 +134,22 @@ provider geolocates somewhere misleading.
 **The Geo column draws a real flag**, because the usual way does not work here:
 Windows has no flag glyphs at all, so the regional-indicator emoji 🇩🇪 renders as
 the letters D and E in boxes, and egui's bundled emoji font is monochrome. A
-flag has to be a picture. Shipping ~250 of them for a table that will ever show
-two or three is not worth the bytes, so each one is fetched from
-[flagcdn.com](https://flagcdn.com) the first time that country appears and kept
-in `%APPDATA%\TunMan\flags`. After that it is a local file read, offline
-included. What leaves the machine is one request naming a country code, once
-per country ever seen — not which tunnel, and never again. A flag that cannot
-be fetched leaves the two-letter code in place, which is what the column showed
-before.
+flag has to be a picture.
+
+All 252 of them are **compiled into the binary** — 74 KiB for the set at 40 px
+wide, which is nothing next to depending on a website being reachable. That
+trade matters more here than in most apps: this one manages network plumbing,
+so the times someone is staring at its table are disproportionately the times
+the network is broken. A code with no flag (or the probe's own `XX` for
+unknown) shows the two letters instead.
+
+They are drawn bounded rather than stretched to a fixed rectangle, since flags
+have their own aspect ratios — Qatar is 11:28, Switzerland is square — and
+forcing them all into one shape draws the wrong flag.
+
+The images are the flat rectangular kind, from
+[flagpedia](https://flagpedia.net): rendered from Wikimedia Commons vectors and
+in the public domain.
 
 ## Bandwidth caps
 
