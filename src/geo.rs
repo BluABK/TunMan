@@ -53,20 +53,6 @@ pub fn parse_trace(body: &str) -> (String, String) {
     (ip, loc)
 }
 
-/// The regional-indicator flag for an ISO country code.
-///
-/// Built from the code rather than a lookup table: the two letters map onto
-/// U+1F1E6..U+1F1FF by offset, so every valid code works and an invalid one
-/// falls back to the letters instead of rendering a wrong flag.
-pub fn flag(country: &str) -> String {
-    let c = country.trim().to_uppercase();
-    let bytes = c.as_bytes();
-    if bytes.len() != 2 || !bytes.iter().all(|b| b.is_ascii_uppercase()) || c == "XX" {
-        return c;
-    }
-    bytes.iter().filter_map(|b| char::from_u32(0x1F1E6 + (b - b'A') as u32)).collect()
-}
-
 /// Ask through a SOCKS proxy where it comes out.
 ///
 /// `proxy` is a `host:port` — the tunnel's own advertised address. `socks5h`
@@ -139,24 +125,6 @@ mod tests {
     fn a_missing_country_falls_back_to_unknown_not_an_error() {
         assert_eq!(parse_trace("ip=1.2.3.4"), ("1.2.3.4".to_string(), "XX".to_string()));
         assert_eq!(parse_trace(""), (String::new(), "XX".to_string()));
-    }
-
-    #[test]
-    fn flags_are_built_from_the_code_itself() {
-        assert_eq!(flag("FI"), "🇫🇮");
-        assert_eq!(flag("de"), "🇩🇪");
-        assert_eq!(flag("US"), "🇺🇸");
-    }
-
-    /// A wrong flag is worse than no flag — it would confidently mislabel where
-    /// traffic is coming from.
-    #[test]
-    fn an_unplaceable_or_malformed_code_shows_the_letters_instead() {
-        assert_eq!(flag("XX"), "XX", "Cloudflare's own 'unknown'");
-        assert_eq!(flag("F"), "F");
-        assert_eq!(flag("FIN"), "FIN");
-        assert_eq!(flag("f1"), "F1");
-        assert_eq!(flag(""), "");
     }
 
     #[test]

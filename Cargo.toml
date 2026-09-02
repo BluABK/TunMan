@@ -42,6 +42,9 @@ rfd = "0.17"
 # SOCKS proxy. Doing TLS-over-SOCKS by hand would be far worse than the dep.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "socks", "charset", "http2"] }
 serde_json = "1.0"
+# Decoding the country-flag PNGs. Just the decoder: pulling the whole `image`
+# crate to read one 40px PNG would be several megabytes of build for nothing.
+png = "0.18"
 auto-launch = "0.6"
 
 # Only for the optional StreamArchiver hand-off, which is off by default.

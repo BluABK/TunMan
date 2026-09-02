@@ -4229,6 +4229,7 @@ dependencies = [
  "egui_extras",
  "egui_plot",
  "parking_lot",
+ "png",
  "regex-lite",
  "reqwest",
  "rfd",

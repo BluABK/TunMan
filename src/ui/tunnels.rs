@@ -289,7 +289,9 @@ fn header_cell(ui: &mut egui::Ui, key: C) {
             "Geo",
             "Country of the tunnel's EXIT, measured by asking through the tunnel itself \
              rather than by looking up the server's address. Set a manual override when \
-             editing a tunnel if the provider geolocates somewhere misleading.",
+             editing a tunnel if the provider geolocates somewhere misleading.\n\nThe flag \
+             image is fetched once per country and cached; a country whose flag could \
+             not be fetched shows its two-letter code instead.",
         ),
         C::Server => (
             "Server",
@@ -330,11 +332,23 @@ fn header_cell(ui: &mut egui::Ui, key: C) {
     ui.strong(title).on_hover_text(hover);
 }
 
+/// Flag images the table may draw, by country code. Looked up rather than
+/// fetched here: a cell is drawn every frame, and a table is not the place
+/// to start network requests from.
+struct FlagLookup<'a>(&'a std::collections::HashMap<String, egui::TextureHandle>);
+
+impl FlagLookup<'_> {
+    fn get(&self, country: &str) -> Option<&egui::TextureHandle> {
+        self.0.get(&crate::flags::normalise(country)?)
+    }
+}
+
 fn cell(
     ui: &mut egui::Ui,
     key: C,
     r: &TunnelState,
     def: Option<&Tunnel>,
+    flags: &FlagLookup,
     action: &mut Option<(String, RowAction)>,
 ) {
     match key {
@@ -403,11 +417,29 @@ fn cell(
                 };
                 ui.weak("—").on_hover_text(hover);
             } else {
-                ui.label(crate::geo::flag(&r.country)).on_hover_text(if overridden {
+                let hover = if overridden {
                     format!("{} — set manually for this tunnel.", r.country)
                 } else {
                     format!("{} — measured through the tunnel.", r.country)
-                });
+                };
+                match flags.get(&r.country) {
+                    // The flag is 4:3 at a height that matches the text
+                    // beside it, so a row of them lines up whatever shape
+                    // the individual flags are.
+                    Some(tex) => {
+                        ui.add(
+                            egui::Image::new(tex)
+                                .fit_to_exact_size(egui::vec2(18.0, 13.5))
+                                .corner_radius(1.0),
+                        )
+                        .on_hover_text(hover);
+                    }
+                    // Not fetched yet, or not fetchable: the code says the
+                    // same thing, less prettily.
+                    None => {
+                        ui.label(r.country.to_uppercase()).on_hover_text(hover);
+                    }
+                }
             }
         }
 
@@ -622,10 +654,45 @@ A tunnel that has just                      started is always a second or two sh
     }
 }
 
+/// Make sure every country currently on screen has its flag fetched and
+/// uploaded, exactly once each.
+///
+/// Called from the table because that is what knows which countries are on
+/// screen, but it does no work in the common case: a code already in the
+/// texture map is skipped, and a code with no file yet starts one background
+/// fetch and is skipped on every frame until that lands.
+fn load_flags(app: &mut TunManApp, ctx: &egui::Context) {
+    let wanted: Vec<String> = app
+        .rows
+        .iter()
+        .filter_map(|r| crate::flags::normalise(&r.country))
+        .filter(|cc| !app.flag_textures.contains_key(cc))
+        .collect();
+    for cc in wanted {
+        match crate::flags::cached(&cc) {
+            Some(png) => {
+                if let Some(img) = crate::flags::decode(&png) {
+                    let tex =
+                        ctx.load_texture(format!("flag:{cc}"), img, egui::TextureOptions::LINEAR);
+                    app.flag_textures.insert(cc, tex);
+                }
+                // A file that will not decode is left alone rather than
+                // retried every frame; the row shows the code instead.
+            }
+            None => crate::flags::ensure(&cc, &app.rt),
+        }
+    }
+}
+
 fn table(app: &mut TunManApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let mut action: Option<(String, RowAction)> = None;
     let selected = app.selected.clone();
+    // Every country on screen needs its flag fetched once and uploaded
+    // once; both are no-ops after the first time.
+    load_flags(app, ui.ctx());
+    let flags = FlagLookup(&app.flag_textures);
+
     let cols = crate::ui::table::fit(COLS, ui.available_width(), ui.spacing().item_spacing.x);
 
     let mut builder = TableBuilder::new(ui)
@@ -650,7 +717,7 @@ fn table(app: &mut TunManApp, ui: &mut egui::Ui) {
 
                 for c in &cols {
                     let key = c.key;
-                    row.col(|ui| cell(ui, key, r, def, &mut action));
+                    row.col(|ui| cell(ui, key, r, def, &flags, &mut action));
                 }
 
                 if row.response().clicked() {
@@ -740,11 +807,7 @@ fn facts(app: &TunManApp, ui: &mut egui::Ui, state: &crate::supervisor::TunnelSt
     ));
     items.push((
         "Geo",
-        if state.country.is_empty() {
-            "—".to_string()
-        } else {
-            format!("{} {}", crate::geo::flag(&state.country), state.country)
-        },
+        if state.country.is_empty() { "—".to_string() } else { state.country.to_uppercase() },
         "Country of the exit. Needs the health probe, or a manual override.",
     ));
     items.push((

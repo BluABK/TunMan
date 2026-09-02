@@ -41,6 +41,11 @@ pub enum Tab {
 }
 
 pub struct TunManApp {
+    /// For the UI's own async work: fetching a flag image. Everything else the
+    /// UI does is a message to a supervisor.
+    pub rt: tokio::runtime::Handle,
+    /// Flag images already uploaded to the GPU, by country code.
+    pub flag_textures: std::collections::HashMap<String, egui::TextureHandle>,
     pub shared: Arc<Shared>,
     pub mount_shared: Arc<MountShared>,
     pub sync_shared: Arc<SyncShared>,
@@ -95,6 +100,7 @@ pub struct TunManApp {
 impl TunManApp {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        rt: tokio::runtime::Handle,
         shared: Arc<Shared>,
         mount_shared: Arc<MountShared>,
         sync_shared: Arc<SyncShared>,
@@ -110,6 +116,8 @@ impl TunManApp {
     ) -> TunManApp {
         let rclone_remotes = crate::mounts::list_remotes(&cfg.settings.rclone_path);
         TunManApp {
+            rt,
+            flag_textures: std::collections::HashMap::new(),
             shared,
             mount_shared,
             sync_shared,

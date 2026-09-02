@@ -131,6 +131,18 @@ and 95% in red reads as a fault rather than as arithmetic.
 A country can be overridden per tunnel, for one that cannot be probed or whose
 provider geolocates somewhere misleading.
 
+**The Geo column draws a real flag**, because the usual way does not work here:
+Windows has no flag glyphs at all, so the regional-indicator emoji 🇩🇪 renders as
+the letters D and E in boxes, and egui's bundled emoji font is monochrome. A
+flag has to be a picture. Shipping ~250 of them for a table that will ever show
+two or three is not worth the bytes, so each one is fetched from
+[flagcdn.com](https://flagcdn.com) the first time that country appears and kept
+in `%APPDATA%\TunMan\flags`. After that it is a local file read, offline
+included. What leaves the machine is one request naming a country code, once
+per country ever seen — not which tunnel, and never again. A flag that cannot
+be fetched leaves the two-letter code in place, which is what the column showed
+before.
+
 ## Bandwidth caps
 
 Hourly, weekly and monthly limits in MiB, to keep a box off its provider's bad

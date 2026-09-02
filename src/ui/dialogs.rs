@@ -260,7 +260,9 @@ pub fn show_editor(app: &mut TunManApp, ctx: &egui::Context) {
                             .desired_width(60.0),
                     );
                     if !ed.draft.country_override.trim().is_empty() {
-                        ui.label(crate::geo::flag(&ed.draft.country_override));
+                        // The code itself: this dialog has no texture cache to draw a
+                        // flag from, and two letters is what the field holds.
+                        ui.label(ed.draft.country_override.trim().to_uppercase());
                     }
                 });
                 ui.end_row();
