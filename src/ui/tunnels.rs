@@ -311,8 +311,9 @@ fn header_cell(ui: &mut egui::Ui, key: C) {
         ),
         C::Latency => (
             "Latency",
-            "Round trip of the last probe, through the tunnel. The hover shows the \
-             average of the last few, which is the number worth trusting — one slow \
+            "Round trip of the last probe, through the tunnel. Measured once when the \
+             tunnel comes up, and repeatedly if the health probe is on. The hover shows \
+             the average of the last few, which is the number worth trusting — one slow \
              probe on a busy link is noise.",
         ),
         C::Conns => ("Conns", "Sockets open through this tunnel right now."),
@@ -394,8 +395,10 @@ fn cell(
                         "Only a SOCKS tunnel can be asked where it comes out."
                     }
                     _ => {
-                        "Not probed yet. Turn on the health probe in Settings to fill \
-                         this in, or set a country manually when editing the tunnel."
+                        "Not measured yet. Every SOCKS tunnel is asked where it comes out \
+                         once it is up; until then, or if that request cannot get through, \
+                         this stays empty. A country can also be set by hand when editing \
+                         the tunnel."
                     }
                 };
                 ui.weak("—").on_hover_text(hover);
@@ -438,8 +441,10 @@ fn cell(
         C::Exit => {
             if r.exit_ip.is_empty() {
                 ui.weak("—").on_hover_text(
-                    "Where this tunnel comes out is only known once it has been \
-                     probed. Enable the health probe in Settings.",
+                    "Where this tunnel comes out is measured through the tunnel itself, \
+                     once it is up. Empty means that request has not completed: the \
+                     tunnel may still be starting, or whatever it exits through blocks \
+                     the lookup. The Log tab has the reason.",
                 );
             } else {
                 let same = r.exit_ip == r.server_ip;
@@ -518,8 +523,9 @@ A tunnel that has just                      started is always a second or two sh
         C::Latency => {
             if r.latency_ms == 0 {
                 ui.weak("—").on_hover_text(
-                    "No probe has completed. Latency comes from the health probe, \
-                     which is off by default — turn it on in Settings.",
+                    "No probe has completed yet. Latency comes from the same request \
+                     that measures the exit, made once when the tunnel comes up; turn \
+                     the health probe on in Settings to keep re-measuring it.",
                 );
             } else {
                 let color = if r.latency_ms < 150 {

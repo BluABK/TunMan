@@ -922,24 +922,34 @@ pub fn show_settings(app: &mut TunManApp, ctx: &egui::Context) {
                 ui.end_row();
 
                 ui.label("Health probe").on_hover_text(
-                    "Periodically opens a real connection through each SOCKS tunnel. This is \
-                     the difference between \"ssh is running\" and \"the tunnel works\" — a \
-                     wedged session keeps the process alive while carrying nothing.",
+                    "Opens a real connection through a SOCKS tunnel — the difference \
+                     between \"ssh is running\" and \"the tunnel works\", since a wedged \
+                     session keeps the process alive while carrying nothing.\n\nThe same \
+                     request is what fills in a tunnel's exit address, country and \
+                     latency, so every SOCKS tunnel is probed once as soon as it is up, \
+                     whatever this is set to. What the setting adds is repeating it.",
                 );
                 ui.vertical(|ui| {
-                    ui.checkbox(&mut cfg.probe_enabled, "Probe tunnels");
+                    ui.horizontal(|ui| {
+                        ui.label("Target");
+                        ui.text_edit_singleline(&mut cfg.probe_target);
+                    })
+                    .response
+                    .on_hover_text(
+                        "host:port to reach through the proxy. Used by the one-off probe \
+                         too, so clearing it turns off measuring the exit entirely.",
+                    );
+                    ui.checkbox(&mut cfg.probe_enabled, "Re-probe periodically").on_hover_text(
+                        "Keep asking, so a changed exit or a link that got slower is \
+                         noticed. Off by default: the answer rarely changes, and each \
+                         probe is a real request through the tunnel.",
+                    );
                     ui.add_enabled_ui(cfg.probe_enabled, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Target");
-                            ui.text_edit_singleline(&mut cfg.probe_target);
-                        })
-                        .response
-                        .on_hover_text("host:port to reach through the proxy.");
                         ui.horizontal(|ui| {
                             ui.label("Every");
                             ui.add(
                                 egui::DragValue::new(&mut cfg.probe_interval_secs)
-                                    .range(30..=3600)
+                                    .range(crate::supervisor::MIN_PROBE_SECS..=3600)
                                     .suffix(" s"),
                             );
                         });

@@ -41,8 +41,8 @@ straight away rather than inheriting a stale backoff.
 **"ssh is running" is not "the tunnel works."** A forward that failed to bind,
 or a session wedged behind a dead NAT, keeps the process alive while carrying
 nothing. So a tunnel is only reported *up* once its port actually accepts a
-connection, and the optional health probe goes further: it drives a real SOCKS
-CONNECT through the proxy to a host you choose.
+connection, and a probe goes further: it drives a real SOCKS CONNECT through
+the proxy to a host you choose.
 
 **Closing the window hides it.** Tunnels keep running; quit from the tray.
 
@@ -104,6 +104,19 @@ That single request answers three questions at once, so it also gives the
 side's own latency, not just the hop to the server. The row shows the last
 probe and the average of the last few on hover; one slow probe on a busy link
 is noise, a raised average is the tunnel being slow.
+
+**Every SOCKS tunnel is measured once, as soon as it is up.** Those three
+columns exist only because something asked, so a tunnel that is never probed
+shows three em dashes for its whole life — with nothing on the row to say that
+a setting on another tab was the reason. One request when a tunnel comes up is
+cheap, and it is the difference between a table that answers "where does this
+come out" and one that does not.
+
+What the **health probe** setting buys, then, is *repetition*: re-asking on an
+interval, which is how a changed exit or a link that got slower gets noticed.
+It is off by default because the answer rarely changes; the interval has a
+30-second floor, since a probe is a real request and running it constantly
+would be measuring the measurement.
 
 The **server's own address** sits beside its hostname, from a plain local DNS
 lookup, so you never have to resolve it yourself.

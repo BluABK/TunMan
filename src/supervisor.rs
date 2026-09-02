@@ -382,10 +382,10 @@ async fn start(
     let task = TunnelTask {
         tunnel: t.clone(),
         ssh_path: cfg.settings.ssh_path.clone(),
-        probe: cfg
-            .settings
-            .probe_enabled
-            .then(|| (cfg.settings.probe_target.clone(), cfg.settings.probe_interval_secs.max(30))),
+        probe_target: cfg.settings.probe_target.clone(),
+        // The setting controls repetition, not whether the tunnel is ever
+        // measured — see `probe_schedule`.
+        probe_every: cfg.settings.probe_enabled.then_some(cfg.settings.probe_interval_secs),
         shared: shared.clone(),
     };
     tokio::spawn(task.run(stop_rx));
@@ -408,7 +408,10 @@ async fn stop(name: &str, shared: &Arc<Shared>, running: &mut HashMap<String, Ru
 struct TunnelTask {
     tunnel: Tunnel,
     ssh_path: String,
-    probe: Option<(String, u64)>,
+    /// Where a probe connects through the tunnel to prove it carries traffic.
+    probe_target: String,
+    /// How often to re-probe, or `None` to measure once and leave it.
+    probe_every: Option<u64>,
     shared: Arc<Shared>,
 }
 
@@ -598,24 +601,27 @@ impl TunnelTask {
 
         // The probe answers three questions with one request: is the tunnel
         // actually carrying traffic, where does it come out, and how slow is it.
-        let probe_task = match (&self.probe, ready) {
-            (Some((target, every)), true) if t.probeable() => {
-                let (target, every) = (target.clone(), *every);
-                let addr = format!("{}:{}", t.bind, t.port);
-                let shared = self.shared.clone();
-                let n = name.clone();
-                let override_country = t.country_override.clone();
-                Some(tokio::spawn(async move {
-                    // Probe once straight away so the columns fill in on start
-                    // rather than after a whole interval of blanks.
-                    loop {
-                        run_probe(&shared, &n, &addr, &target, &override_country).await;
-                        tokio::time::sleep(Duration::from_secs(every)).await;
-                    }
-                }))
-            }
-            _ => None,
-        };
+        let schedule = ready
+            .then(|| probe_schedule(t.probeable(), &self.probe_target, self.probe_every))
+            .flatten();
+        let probe_task = schedule.map(|every| {
+            let target = self.probe_target.clone();
+            let addr = format!("{}:{}", t.bind, t.port);
+            let shared = self.shared.clone();
+            let n = name.clone();
+            let override_country = t.country_override.clone();
+            tokio::spawn(async move {
+                // Always once, so the exit address, country and latency are
+                // filled in as soon as the tunnel is up rather than left as
+                // three em dashes.
+                run_probe(&shared, &n, &addr, &target, &override_country).await;
+                let Some(every) = every else { return };
+                loop {
+                    tokio::time::sleep(Duration::from_secs(every)).await;
+                    run_probe(&shared, &n, &addr, &target, &override_country).await;
+                }
+            })
+        });
 
         let outcome = self.watch(child, stop_rx, pid, last_line).await;
         if let Some(h) = meter_task {
@@ -756,6 +762,32 @@ async fn wait_until_ready(
     }
 }
 
+/// What probing a tunnel should do.
+///
+/// `None` means never — the tunnel cannot be probed (only a SOCKS tunnel can be
+/// asked where it comes out), or there is no target to ask through.
+/// `Some(None)` means once, when the tunnel comes up. `Some(Some(secs))` means
+/// once and then every `secs`.
+///
+/// The one-shot is not conditional on the health-probe setting, and that is the
+/// point: exit address, country and latency are only ever learned by probing,
+/// so with probing off those three columns stayed empty for the life of the
+/// tunnel — an em dash where the answer should be, and nothing on the row to
+/// say that a setting three tabs away was the reason. Measuring once when a
+/// tunnel comes up costs a single request. What the setting buys is *repetition*
+/// — noticing that the exit changed, or that the link got slower — and that is
+/// what it now controls.
+pub fn probe_schedule(probeable: bool, target: &str, every: Option<u64>) -> Option<Option<u64>> {
+    if !probeable || target.trim().is_empty() {
+        return None;
+    }
+    Some(every.map(|s| s.max(MIN_PROBE_SECS)))
+}
+
+/// Floor for the probe interval. A probe is a real request through the tunnel;
+/// running it every few seconds would be measuring the measurement.
+pub const MIN_PROBE_SECS: u64 = 30;
+
 /// One probe: exit address and country if the request completes, a plain
 /// reachability check otherwise.
 ///
@@ -846,6 +878,34 @@ pub async fn probe_socks(proxy: &str, target: &str) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The column that prompted this: Exit IP (and Geo, and Latency) is only
+    /// ever filled by a probe, so a tunnel that is never probed shows an em
+    /// dash forever. Every probeable tunnel is measured once, whatever the
+    /// health-probe setting says.
+    #[test]
+    fn a_probeable_tunnel_is_always_measured_at_least_once() {
+        assert_eq!(probe_schedule(true, "example.com:443", None), Some(None));
+        assert_eq!(probe_schedule(true, "example.com:443", Some(300)), Some(Some(300)));
+    }
+
+    /// What the setting buys is repetition, and repetition has a floor: a probe
+    /// is a real request through the tunnel.
+    #[test]
+    fn the_probe_interval_has_a_floor() {
+        assert_eq!(probe_schedule(true, "example.com:443", Some(1)), Some(Some(MIN_PROBE_SECS)));
+        assert_eq!(probe_schedule(true, "example.com:443", Some(0)), Some(Some(MIN_PROBE_SECS)));
+    }
+
+    /// Nothing to ask, or nothing to ask through: a local or remote forward has
+    /// no proxy to make the request over, and an empty target has nowhere to
+    /// send it.
+    #[test]
+    fn a_tunnel_that_cannot_be_probed_is_not() {
+        assert_eq!(probe_schedule(false, "example.com:443", Some(300)), None);
+        assert_eq!(probe_schedule(true, "", Some(300)), None);
+        assert_eq!(probe_schedule(true, "   ", None), None);
+    }
 
     #[test]
     fn a_status_has_a_label_and_a_dot() {
